@@ -1,0 +1,6 @@
+*.exe
+*.bin
+*.obj
+_old/*
+_pics/*
+opc.asm

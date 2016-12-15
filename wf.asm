@@ -171,6 +171,7 @@ forth_name:
   dict_name 'macro'
   dict_name 'here'
   dict_name 'xhere'
+  dict_name "xrel"
   dict_name 'inst'
   dict_name "f'"
   dict_name "m'"
@@ -209,6 +210,7 @@ forth_symb:
   dict_symb macro_
   dict_symb here
   dict_symb xhere
+  dict_symb xrel
   dict_symb inst
   dict_symb ftick
   dict_symb mtick
@@ -732,6 +734,10 @@ here:
 xhere:
   _dup
   mov rax, [code_here]
+  ret
+
+xrel:
+  sub rax, [code_here]
   ret
 
 ; INST ( -- )

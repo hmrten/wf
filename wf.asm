@@ -177,6 +177,9 @@ forth_name:
   dict_name "f'"
   dict_name "m'"
   dict_name 'lc-lit?'
+  dict_name 'pop-lit'
+  dict_name 'sv@'
+  dict_name 'sv!'
 .size = $ - forth_name
 
 forth_symb:
@@ -217,6 +220,9 @@ forth_symb:
   dict_symb ftick
   dict_symb mtick
   dict_symb lc_lit?
+  dict_symb pop_lit
+  dict_symb sv_fetch
+  dict_symb sv_store
 .size = $ - forth_symb
 
 assert forth_name.size = forth_symb.size
@@ -231,7 +237,6 @@ macro_name:
   dict_name 'next'
   dict_name 'i'
   dict_name 'then'
-  dict_name 'pop-lit'
 .size = $ - macro_name
 
 macro_symb:
@@ -244,7 +249,6 @@ macro_symb:
   dict_symb next
   dict_symb i
   dict_symb then
-  dict_symb pop_lit
 .size = $ - macro_symb
 
 assert macro_name.size = macro_symb.size
@@ -269,16 +273,20 @@ reset_rsp dq ?
 align 4096
 forth_space rb 32*1024
 macro_space rb 32*1024
+
 align 4096
-stack_end   rb 4096
-stack_space = $
-align 4096
-data_space  rb 4096
+sv_space    rb 4096
 
 align 4096
 lc_end      rb 4096
 lc_space  = $
 
+align 4096
+stack_end   rb 4096
+stack_space = $
+
+align 4096
+data_space  rb 4096
 section '.text' code readable writeable executable
 
 ; \ ( ignore rest of line )
@@ -934,6 +942,20 @@ pop_lit:
   mov rax, [rdi-8]    ; TODO: only handles mov rax, imm64 for now
   sub rdi, rdx        ; undo code for literal (dup + mov)
   mov [code_here], rdi
+  ret
+
+; SV@ ( n -- x )
+sv_fetch:
+  lea rdi, [sv_space]
+  mov rax, [rdi+rax*8]
+  ret
+
+; SV! ( x n -- )
+sv_store:
+  mov rdx, [rbx]
+  lea rdi, [sv_space]
+  mov [rdi+rax*8], rdx
+  _drop 2
   ret
 
 compile:

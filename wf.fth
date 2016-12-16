@@ -51,7 +51,6 @@ inst 2drop  08  48 8B 43 08 48 8D 5B 10
 85 0 sv!
 
 : dup ` -sp ` s0 ;
-: lit ` dup ` lit32 -d,x ;
 
 forth
 : jcc@ 0 sv@  ;
@@ -60,6 +59,20 @@ forth
 macro
 : if jcc, xhere ;
 
+: cmp
+  lc-lit? if pop-lit ` #cmp -d,x ;; then
+  ` cmp -d,x ` +sp ;
+
+: u<= ` cmp 87 jcc! ;
+: u>= ` cmp 82 jcc! ;
+
+\ TODO: needs to update lc_stack
+: lit
+  ` dup
+  7FFFFFFF u<= if ` lit32 -d,x ;; then
+  -80000000 u>= if ` lit32s -d,x ;; then
+  ` lit64 -,x ;
+
 : +
   lc-lit? if pop-lit ` #+ -d,x ;; then
   ` s+ ` +sp ;
@@ -67,12 +80,6 @@ macro
 : -
   lc-lit? if pop-lit ` #- -d,x ;; then
   ` neg ` + ;
-
-: cmp
-  lc-lit? if pop-lit ` #cmp -d,x ;; then
-  ` cmp -d,x ` +sp ;
-
-: u<= ` cmp 87 jcc! ;
 
 forth
 : !  s>n !n  2drop ;

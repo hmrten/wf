@@ -165,6 +165,7 @@ forth_name:
   dict_name 'b,x'
   dict_name 'w,x'
   dict_name 'd,x'
+  dict_name '-,x'
   dict_name '-b,x'
   dict_name '-d,x'
   dict_name ']'
@@ -208,6 +209,7 @@ forth_symb:
   dict_symb bcomma_x
   dict_symb wcomma_x
   dict_symb dcomma_x
+  dict_symb patch_x
   dict_symb bpatch_x
   dict_symb dpatch_x
   dict_symb rbracket
@@ -719,6 +721,10 @@ wcomma_x:
 dcomma_x:
   mov ecx, 4
   jmp comma_x.shared
+patch_x:
+  mov rdi, [code_here]
+  mov [rdi-8], rax
+  jmp @b
 bpatch_x:
   mov rdi, [code_here]
   mov [rdi-1], al

@@ -237,6 +237,7 @@ macro_name:
   dict_name ';;'
   dict_name 'for'
   dict_name 'next'
+  dict_name 'loop'
   dict_name 'i'
   dict_name 'then'
 .size = $ - macro_name
@@ -249,6 +250,7 @@ macro_symb:
   dict_symb exit
   dict_symb for
   dict_symb next
+  dict_symb loop_
   dict_symb i
   dict_symb then
 .size = $ - macro_symb
@@ -880,6 +882,38 @@ next:
 .rest:
   mov word  [rdi+$00], $5C41
   add rdi, 2
+  mov [code_here], rdi
+  _drop
+  ret
+
+; LOOP ( orig -- )
+loop_:
+; 0000: 49 FF C4           inc         r12
+; 0003: 4D 39 EC           cmp         r12,r13
+; 0006: 75 00              jne         00
+; 0006: 0F 85 00 00 00 00  jne         00
+; 0008: 41 5C              pop         r12
+; 000A: 41 5D              pop         r13
+  mov rdi, [code_here]
+  mov dword [rdi+$00], $C4FF49
+  mov dword [rdi+$03], $EC394D
+  sub rax, $08
+  sub rax, rdi
+  add rdi, 6
+  cmp eax, -128
+  jl .rel32
+  mov byte  [rdi+$00], $75
+  mov byte  [rdi+$01], al
+  add rdi, 2
+  jmp .rest
+.rel32:
+  sub rax, $04
+  mov word  [rdi+$00], $850F
+  mov dword [rdi+$02], eax
+  add rdi, 6
+.rest:
+  mov dword [rdi+$00], $5D415C41
+  add rdi, 4
   mov [code_here], rdi
   _drop
   ret

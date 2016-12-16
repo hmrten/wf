@@ -81,6 +81,13 @@ macro
   lc-lit? if pop-lit ` #- -d,x ;; then
   ` neg ` + ;
 
+: #do
+  pop-lit pop-lit \ #lo #hi
+  55415441 d,x    \ push r12, r13
+  BD41 w,x d,x    \ mov r13d, #hi
+  BC41 w,x d,x    \ mov r12d, #lo
+  xhere ;
+
 forth
 : !  s>n !n  2drop ;
 : d! s>n d!n 2drop ;

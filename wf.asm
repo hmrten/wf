@@ -128,6 +128,7 @@ macro_here dq macro_space + macro_name.size
 dict_here  dq forth_here
 code_here  dq code_space
 data_here  dq data_space
+lc_stack   dq lc_space
 action     dq interpret
 var_base   dd 16
 
@@ -175,6 +176,7 @@ forth_name:
   dict_name 'inst'
   dict_name "f'"
   dict_name "m'"
+  dict_name 'lc-lit?'
 .size = $ - forth_name
 
 forth_symb:
@@ -214,6 +216,7 @@ forth_symb:
   dict_symb inst
   dict_symb ftick
   dict_symb mtick
+  dict_symb lc_lit?
 .size = $ - forth_symb
 
 assert forth_name.size = forth_symb.size
@@ -223,9 +226,12 @@ macro_name:
   dict_name '\'
   dict_name '['
   dict_name ';'
+  dict_name ';;'
   dict_name 'for'
   dict_name 'next'
   dict_name 'i'
+  dict_name 'then'
+  dict_name 'pop-lit'
 .size = $ - macro_name
 
 macro_symb:
@@ -233,9 +239,12 @@ macro_symb:
   dict_symb backslash
   dict_symb lbracket
   dict_symb semicolon
+  dict_symb exit
   dict_symb for
   dict_symb next
   dict_symb i
+  dict_symb then
+  dict_symb pop_lit
 .size = $ - macro_symb
 
 assert macro_name.size = macro_symb.size
@@ -265,6 +274,10 @@ stack_end   rb 4096
 stack_space = $
 align 4096
 data_space  rb 4096
+
+align 4096
+lc_end      rb 4096
+lc_space  = $
 
 section '.text' code readable writeable executable
 
@@ -804,11 +817,12 @@ lbracket:
 ; ; ( end current definition )
 semicolon:
   call lbracket
+exit:
   mov rdi, [code_here]
   mov byte [rdi], $C3
   inc rdi
   mov [code_here], rdi
-  ret
+  jmp lc_reset
 
 ; FOR (  -- orig )
 for:
@@ -866,6 +880,14 @@ i:
   mov [code_here], rdi
   ret
 
+; ( orig -- )
+then:
+  mov rdi, [code_here]
+  sub rdi, rax
+  mov dword [rax-4], edi
+  _drop
+  ret
+
 interpret:
   call find
   jne .number
@@ -875,10 +897,50 @@ interpret:
   jne abort.notfound
   ret
 
+lc_reset:
+  lea rdx, [lc_space]
+  mov [lc_stack], rdx
+  ret
+
+lc_word:
+  mov rdi, [lc_stack]
+  sub rdi, 4
+  mov dword [rdi], 0
+  mov [lc_stack], rdi
+  ret
+
+lc_lit:
+  mov rdi, [lc_stack]
+  sub rdi, 4
+  mov dword [rdi], $00110001 ; 17 bytes, type = lit
+  mov [lc_stack], rdi
+  ret
+
+lc_lit?:
+  mov rdi, [lc_stack]
+  mov edx, [rdi]
+  and edx, $FFFF
+  cmp edx, 1
+  ret
+
+; ( -- x )
+pop_lit:
+  _dup
+  mov rsi, [lc_stack]
+  mov edx, [rsi]
+  add [lc_stack], 4
+  shr edx, 16
+  mov rdi, [code_here]
+  mov rax, [rdi-8]    ; TODO: only handles mov rax, imm64 for now
+  sub rdi, rdx        ; undo code for literal (dup + mov)
+  mov [code_here], rdi
+  ret
+
 compile:
   call mfind
   jne .call
-  jmp rsi
+  call rsi
+  jmp lc_word
 .call:
   call find
   jne .number
@@ -892,6 +954,7 @@ compile:
 .number:
   call number
   jne abort.notfound
+  call lc_lit
   mov rdi, [code_here]
   mov dword [rdi+$00], $F85B8D48 ; lea rbx, [rbx-8]
   mov dword [rdi+$04], $038948   ; mov [rbx], rax

@@ -9,6 +9,8 @@ inst lea    07  48 8D 05 00 00 00 00          \ lea rax, [rip+0]
 
 \ control flow
 inst call   05  E8 00 00 00 00                \ call rel32
+inst jz     06  0F 84 00 00 00 00             \ jz rel32
+inst jnz    06  0F 85 00 00 00 00             \ jnz rel32
 
 \ stack
 inst -sp    04  48 8D 5B F8                   \ lea rbx, [rbx-8]
@@ -25,6 +27,9 @@ inst w!n    03  66 89 10                      \ mov [rax], dx
 inst b!n    02  88 10                         \ mov [rax], dl
 inst @      03  48 8B 00                      \ mov rax, [rax]
 
+\ logic
+inst ?      03  48 85 C0                      \ test rax, rax
+
 \ arithmetic
 inst b#-    04  48 83 E8 00                   \ sub rax, imm8
 inst b#+    04  48 83 C0 00                   \ add rax, imm8
@@ -32,12 +37,19 @@ inst #-     06  48 2D 00 00 00 00             \ sub rax, imm32
 inst #+     06  48 05 00 00 00 00             \ add rax, imm32
 inst neg    03  48 F7 D8                      \ neg rax
 inst s+     03  48 03 03                      \ add rax, [rbx]
+inst n+     03  48 01 D0                      \ add rax, rdx
 
 \ pair ops
 inst 2drop  08  48 8B 43 08 48 8D 5B 10
 
 \ postpone
 : ` m' call [ m' call xrel -d,x ] xrel -d,x ;
+
+: if ` jnz xhere ;
+
+: +
+  lc-lit? if ` pop-lit ` #+ -d,x ;; then
+  ` s+ ` +sp ;
 
 forth
 : !  s>n !n  2drop ;
@@ -52,9 +64,3 @@ forth
 2 lit-: 2-
 4 lit-: 4-
 8 lit-: 8-
-
-\ : 1- ` #- 1 -b,x ;
-\ : 2- ` #- 2 -b,x ;
-\ : 3- ` #- 3 -b,x ;
-\ : 4- ` #- 4 -b,x ;
-\ : 8- ` #- 8 -b,x ;

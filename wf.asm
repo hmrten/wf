@@ -193,6 +193,7 @@ lname_n     db ?
 
 align 4096
 data_space  rb 32*1024*1024
+data_end = $
 
 align 4096
 stack_end   rb 4096
@@ -537,11 +538,18 @@ FORTHCODE 'emit', emit
   mov eax, 1
   jmp type
 
-
 interpret:
   call find
   jne .number
-  jmp qword [rsi]
+  mov rdi, [rsi]
+  lea rdx, [data_end]
+  cmp rdi, rdx
+  jb .uservar
+  jmp rdi
+.uservar:
+  DUP
+  mov rax, [rdi]
+  ret
 .number:
   call number
   jne abort.notfnd

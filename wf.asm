@@ -150,12 +150,18 @@ macro NIP {
 
 section '.data' data readable writeable
 
+align 16
+basedigits db '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+digitmap   dq $03FF000000000000, $07FFFFFE07FFFFFE
+
+align 8
 user_vars:
 USERVAR 'fd'  , fd, forth_space+forth_names.size
 USERVAR 'md'  , md, macro_space+macro_names.size
 USERVAR 'hd'  , hd, fd
 USERVAR '#tib', tib_n, 0
 USERVAR '>in' , tib_i, 0
+USERVAR 'base', base, 16
 
 ; == UNINITIALIZED DATA
 
@@ -183,7 +189,51 @@ stack_space = $
 
 section '.text' code executable readable writeable
 
-FORTHCODE 'word', word_ ; ( -- a u )
+; NUMBER ( a u -- x )
+; ZF=1 ok, entire string converted, ZF=0 not a number
+FORTHCODE 'number', number
+  test rax, rax
+  jz .empty
+  mov rsi, [rbx]
+  mov edi, [base]
+  xor r8, r8
+  xor r9, r9
+  cmp byte [rsi], '-'
+  sete r9b
+  add rsi, r9
+  sub rax, r9
+.loop:
+  movzx ecx, byte [rsi]
+  inc rsi
+  and cl, $7F
+  bt dword [digitmap], ecx
+  jnc .done
+  sub cl, $30
+  mov edx, ecx
+  cmp cl, 9
+  jbe .digit
+  add cl, $30
+  and cl, $DF
+  lea rdx, [rcx-('0'+7)]
+.digit:
+  cmp edx, edi
+  jge .error
+  imul r8, rdi
+  add r8, rdx
+  dec rax
+  jnz .loop
+.error:
+  test r9, r9
+  je .done
+  neg r8
+.done:
+  test eax, eax
+  mov rax, r8
+.empty:
+  jmp nip
+
+; WORD ( -- a u )
+FORTHCODE 'word', word_
   lea rsi, [tib]
   mov edx, [tib_n]
   mov ecx, [tib_i]
@@ -226,7 +276,8 @@ FORTHCODE 'word', word_ ; ( -- a u )
 .empty:
   ret
 
-FORTHCODE 'refill', refill ; ( -- ZF )
+; REFILL ( -- ZF )
+FORTHCODE 'refill', refill
   lea rbx, [rbx-16]
   mov [rbx+8], rax
   lea rdx, [tib]
@@ -237,11 +288,13 @@ FORTHCODE 'refill', refill ; ( -- ZF )
   mov dword [tib_i], 0
   test eax, eax
 
-FORTHCODE 'drop', drop ; ( x -- )
+; DROP ( x -- )
+FORTHCODE 'drop', drop
   DROP
   ret
 
-FORTHCODE 'accept', accept ; ( a u1 -- u2 )
+; ACCEPT ( a u1 -- u2 )
+FORTHCODE 'accept', accept
   mov rdi, [rbx]
   WINENTER $50
   virtual at rsp+$28
@@ -271,12 +324,12 @@ FORTHCODE 'accept', accept ; ( a u1 -- u2 )
   repne scasb
   cmp byte [rdi-2], $0D
   jne @f
-  dec rdi ; trim \r
+  dec rdi ; drop \r
 @@:
-  dec rdi ; trim \n
+  dec rdi ; drop \n
 
   ; adjust file pointer if we read past first [\r]\n
-  ; (can happen when stdin is redicted to a file)
+  ; (can happen when stdin is redirected to a file)
   neg ecx
   mov edx, ecx
   mov rcx, [stdin]
@@ -301,11 +354,13 @@ FORTHCODE 'accept', accept ; ( a u1 -- u2 )
 .empty:
   WINLEAVE
 
-FORTHCODE 'nip', nip ; ( x y -- x )
+; NIP ( x y -- x )
+FORTHCODE 'nip', nip
   NIP
   ret
 
-FORTHCODE 'type', type ; ( a u -- )
+; TYPE ( a u -- )
+FORTHCODE 'type', type
   WINENTER $30
   mov rcx, [stdout]
   mov rdx, [rbx]
@@ -314,8 +369,38 @@ FORTHCODE 'type', type ; ( a u -- )
   mov [rsp+$20], r9
   call [WriteFile]
   WINLEAVE
+  jmp _2drop
 
-FORTHCODE '2drop', _2drop ; ( x y -- )
+; [M]FIND ( a u -- a u | -- )
+; ZF=1 found, ZF=0 not found, symb offset in rsi
+; if found, consumes string, otherwise leaves it
+mfind:
+  mov rsi, [md]
+  lea rdi, [macro_space]
+  jmp @f
+find:
+  mov rsi, [fd]
+  lea rdi, [forth_space]
+@@:
+  movdqa xmm0, xword [lname]
+  jmp .next
+.loop:
+  movdqa xmm1, [rsi]
+  pcmpeqb xmm1, xmm0
+  pmovmskb ecx, xmm1
+  cmp ecx, $FFFF
+  je .match
+.next:
+  sub rsi, 16
+  cmp rsi, rdi
+  ja .loop
+  or ecx, 1
+  ret
+.match:
+  lea rsi, [rsi+16*1024]
+
+; 2DROP ( x y -- )
+FORTHCODE '2drop', _2drop
   DROP 2
   ret
 
@@ -333,6 +418,7 @@ start:
   WINLEAVE
 
   lea rbx, [stack_space]
+  lea r15, [user_vars]
 
   call refill
 
@@ -348,6 +434,9 @@ start:
   call word_
   test eax, eax
   jz bye
+  call find
+  je bye0
+
   DROP 2
   DUP
   lea rdi, [lname]
@@ -361,6 +450,7 @@ start:
   mov eax, ecx
   call type
 
+cr:
   lea rbx, [rbx-16]
   mov [rbx+8], rax
   lea rdi, [tob]
@@ -375,7 +465,7 @@ start:
   ; DUP
   ; mov eax, edx
   ; call type
-
+bye0:
   lea rdi, [stack_space]
   cmp rbx, rdi
   jne badstk

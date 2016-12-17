@@ -151,8 +151,11 @@ macro NIP {
 section '.data' data readable writeable
 
 user_vars:
-USERVAR 'fd', fd, forth_space+forth_names.size
-USERVAR 'md', md, macro_space+macro_names.size
+USERVAR 'fd'  , fd, forth_space+forth_names.size
+USERVAR 'md'  , md, macro_space+macro_names.size
+USERVAR 'hd'  , hd, fd
+USERVAR '#tib', tib_n, 0
+USERVAR '>in' , tib_i, 0
 
 ; == UNINITIALIZED DATA
 
@@ -168,6 +171,9 @@ BUFSIZE equ 256
 tib         rb BUFSIZE
 tob         rb BUFSIZE
 
+align 16
+lname       rb 32
+
 align 4096
 data_space  rb 32*1024*1024
 
@@ -177,12 +183,70 @@ stack_space = $
 
 section '.text' code executable readable writeable
 
+FORTHCODE 'word', word_ ; ( -- a u )
+  lea rsi, [tib]
+  mov edx, [tib_n]
+  mov ecx, [tib_i]
+  lea rbx, [rbx-16]
+  mov [rbx+8], rax
+  xor eax, eax
+  mov [rbx], rax
+  cmp ecx, edx
+  jae .empty
+.skip:
+  cmp byte [rsi+rcx], $20
+  ja .scan0
+  inc ecx
+  cmp ecx, edx
+  jb .skip
+.scan0:
+  lea r8, [rsi+rcx]
+  lea r9, [lname]
+  lea r10, [lname+31]
+  pxor xmm0, xmm0
+  movdqa [r9], xmm0
+.scan:
+  mov al, byte [rsi+rcx]
+  cmp al, $20
+  jbe .done
+  cmp r9, r10
+  je .next
+  mov byte [r9], al
+  inc r9
+.next:
+  inc ecx
+  cmp ecx, edx
+  jb .scan
+.done:
+  lea rax, [rsi+rcx]
+  sub rax, r8
+  inc ecx
+  mov [tib_i], ecx
+  mov [rbx], r8
+.empty:
+  ret
+
+FORTHCODE 'refill', refill ; ( -- ZF )
+  lea rbx, [rbx-16]
+  mov [rbx+8], rax
+  lea rdx, [tib]
+  mov [rbx], rdx
+  mov eax, BUFSIZE
+  call accept
+  mov dword [tib_n], eax
+  mov dword [tib_i], 0
+  test eax, eax
+
+FORTHCODE 'drop', drop ; ( x -- )
+  DROP
+  ret
+
 FORTHCODE 'accept', accept ; ( a u1 -- u2 )
   mov rdi, [rbx]
   WINENTER $50
   virtual at rsp+$28
     .nread                  dd ?
-                            dd ? ; pad
+                            dd ? ; align .bi struct
     .bi_dwSize              dd ?
     .bi_dwCursorPosition    dd ?
     .bi_wAttributes         dw ?
@@ -270,11 +334,7 @@ start:
 
   lea rbx, [stack_space]
 
-  DUP
-  lea rax, [tib]
-  DUP
-  mov eax, BUFSIZE
-  call accept
+  call refill
 
   DUP
   lea rax, [tob]
@@ -284,11 +344,37 @@ start:
   mov eax, 5
   call type
 
-  mov edx, eax
-  lea rax, [tib]
+@@:
+  call word_
+  test eax, eax
+  jz bye
+  DROP 2
   DUP
-  mov eax, edx
+  lea rdi, [lname]
+  xor eax, eax
+  mov ecx, -1
+  repne scasb
+  not ecx
+  dec ecx
+  lea rax, [lname]
+  DUP
+  mov eax, ecx
   call type
+
+  lea rbx, [rbx-16]
+  mov [rbx+8], rax
+  lea rdi, [tob]
+  mov word [rdi], $0A0D ; \r\n
+  mov [rbx], rdi
+  mov eax, 2
+  call type
+  jmp @b
+
+  ; mov edx, eax
+  ; lea rax, [tib]
+  ; DUP
+  ; mov eax, edx
+  ; call type
 
   lea rdi, [stack_space]
   cmp rbx, rdi
@@ -323,6 +409,7 @@ kernel32, <\
 user32, <\
   MessageBoxA>
 
+align 16
 forth_names:
   FORTHNAMES
 .size = $ - forth_names

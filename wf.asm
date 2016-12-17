@@ -32,12 +32,12 @@
 ; r12 - loop counter           xmm12 - reserved
 ; r13 - loop limit             xmm13 - reserved
 ; r14 - reserved               xmm14 - reserved
-; r15 - reserved               xmm15 - reserved
+; r15 - user variables         xmm15 - reserved
 
 format pe64 console 6.0
-entry _start
+entry start
 
-macro import [lib,api] {
+macro IMPORT [lib,api] {
   common
   local part0,part1,first
   macro part0 lib0,[api0] \{
@@ -62,1075 +62,232 @@ macro import [lib,api] {
   end data
 }
 
-macro win_enter n {
+macro SNAME name {
+  local i, n
+  i = $
+  db name
+  times 16-($-i) db 0
+}
+
+macro FORTHNAMES { SNAME '--END-OF-NAMES--' }
+macro FORTHSYMBS { dq -1, -1 }
+macro MACRONAMES { SNAME '--END-OF-NAMES--' }
+macro MACROSYMBS { dq -1, -1 }
+
+macro FORTHENTRY name, xt, ct=0 {
+  macro FORTHNAMES \{
+    FORTHNAMES
+    SNAME name
+  \}
+  macro FORTHSYMBS \{
+    FORTHSYMBS
+    dq xt, ct
+  \}
+}
+
+macro MACROENTRY name, xt, ct=0 {
+  macro MACRONAMES \{
+    MACRONAMES
+    SNAME name
+  \}
+  macro MACROSYMBS \{
+    MACROSYMBS
+    dq xt, ct
+  \}
+}
+
+macro FORTHCODE name, xt {
+  FORTHENTRY name, xt
+  label xt
+}
+
+macro MACROCODE name, xt {
+  MACROENTRY name, xt
+  label xt
+}
+
+macro USERVAR name, addr, val {
+  FORTHENTRY name, addr
+  addr: dq val
+}
+
+macro RELOCDICT names, symbs, space {
+  lea rsi, [names]
+  lea rdi, [space]
+  mov ecx, names#.size
+  push rcx
+  rep movsb
+  pop rcx
+  lea rsi, [symbs]
+  lea rdi, [space+16*1024]
+  rep movsb
+}
+
+macro WINENTER n {
   mov rbp, rsp
   and rsp, -16
   sub rsp, n
 }
 
-macro win_leave {
+macro WINLEAVE {
   mov rsp, rbp
 }
 
-macro _dup {
+macro DUP {
   lea rbx, [rbx-8]
   mov [rbx], rax
 }
 
-macro _drop n=1 {
+macro DROP n=1 {
   assert n > 0
   mov rax, [rbx+8*(n-1)]
   lea rbx, [rbx+8*n]
 }
 
-macro _nip {
+macro NIP {
   lea rbx, [rbx+8]
 }
 
-macro dict_name name {
-  local i
-  i = $
-  db name
-  times 16-$+i db 0
-}
-
-macro dict_symb symb, xtra=0 {
-  dq symb, xtra
-}
-
-macro checkstk {
-  lea rcx, [stack_space]
-  cmp rbx, rcx
-  je abort.underflow
-}
-
-BUFSIZE equ 256
-
 section '.data' data readable writeable
 
-; == INITIALIZED DATA
-
-import \
-kernel32, <\
-  ExitProcess,\
-  GetStdHandle,\
-  ReadFile,\
-  WriteFile,\
-  GetConsoleScreenBufferInfo,\
-  SetConsoleCursorPosition,\
-  GetFileType,\
-  CreateFileA,\
-  SetFilePointer>
-
-align 8
-forth_here dq forth_space + forth_name.size
-macro_here dq macro_space + macro_name.size
-dict_here  dq forth_here
-code_here  dq code_space
-data_here  dq data_space
-lc_stack   dq lc_space
-action     dq interpret
-var_base   dd 16
-
-align 16
-basedigits db '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-digitmap   dq $03FF000000000000, $07FFFFFE07FFFFFE
-
-conin_str  db 'CONIN$', 0
-
-align 16
-forth_name:
-  dict_name ''
-  dict_name '\'
-  dict_name 'h.'
-  dict_name '.'
-  dict_name '.s'
-  dict_name 'cr'
-  dict_name 'space'
-  dict_name 'emit'
-  dict_name 'type'
-  dict_name 'accept'
-  dict_name 'refill'
-  dict_name 'parse'
-  dict_name 'word'
-  dict_name 'number'
-  dict_name 'header'
-  dict_name 'create'
-  dict_name 'does>'
-  dict_name ','
-  dict_name 'b,'
-  dict_name 'w,'
-  dict_name 'd,'
-  dict_name ',x'
-  dict_name 'b,x'
-  dict_name 'w,x'
-  dict_name 'd,x'
-  dict_name '-,x'
-  dict_name '-b,x'
-  dict_name '-d,x'
-  dict_name ']'
-  dict_name 'forth'
-  dict_name 'macro'
-  dict_name 'here'
-  dict_name 'xhere'
-  dict_name "xrel"
-  dict_name 'inst'
-  dict_name "f'"
-  dict_name "m'"
-  dict_name 'lc-lit?'
-  dict_name 'pop-lit'
-  dict_name 'sv@'
-  dict_name 'sv!'
-.size = $ - forth_name
-
-forth_symb:
-  dict_symb 0
-  dict_symb backslash
-  dict_symb hexdot
-  dict_symb dot
-  dict_symb dot_s
-  dict_symb cr
-  dict_symb space
-  dict_symb emit
-  dict_symb type
-  dict_symb accept
-  dict_symb refill
-  dict_symb parse
-  dict_symb word_
-  dict_symb number
-  dict_symb header
-  dict_symb create
-  dict_symb does
-  dict_symb comma
-  dict_symb bcomma
-  dict_symb wcomma
-  dict_symb dcomma
-  dict_symb comma_x
-  dict_symb bcomma_x
-  dict_symb wcomma_x
-  dict_symb dcomma_x
-  dict_symb patch_x
-  dict_symb bpatch_x
-  dict_symb dpatch_x
-  dict_symb rbracket
-  dict_symb forth
-  dict_symb macro_
-  dict_symb here
-  dict_symb xhere
-  dict_symb xrel
-  dict_symb inst
-  dict_symb ftick
-  dict_symb mtick
-  dict_symb lc_lit?
-  dict_symb pop_lit
-  dict_symb sv_fetch
-  dict_symb sv_store
-.size = $ - forth_symb
-
-assert forth_name.size = forth_symb.size
-
-macro_name:
-  dict_name ''
-  dict_name '\'
-  dict_name '['
-  dict_name ';'
-  dict_name ';;'
-  dict_name 'for'
-  dict_name 'next'
-  dict_name 'loop'
-  dict_name 'i'
-  dict_name 'then'
-.size = $ - macro_name
-
-macro_symb:
-  dict_symb 0
-  dict_symb backslash
-  dict_symb lbracket
-  dict_symb semicolon
-  dict_symb exit
-  dict_symb for
-  dict_symb next
-  dict_symb loop_
-  dict_symb i
-  dict_symb then
-.size = $ - macro_symb
-
-assert macro_name.size = macro_symb.size
+user_vars:
+USERVAR 'fd', fd, forth_space+forth_names.size
+USERVAR 'md', md, macro_space+macro_names.size
 
 ; == UNINITIALIZED DATA
 
-nob       rb BUFSIZE
-tob       rb BUFSIZE
-tib       rb BUFSIZE
-tib_n     dd ?
-tib_i     dd ?
-cib       rb BUFSIZE
-cib_cur   dq ?
-cib_end   dq ?
-align 16
-lname     rb 32
-stdin     dq ?
-stdout    dq ?
-conin     dq ?
-reset_rsp dq ?
+align 8
+stdin       dq ?
+stdout      dq ?
 
 align 4096
 forth_space rb 32*1024
 macro_space rb 32*1024
 
-align 4096
-sv_space    rb 4096
+BUFSIZE equ 256
+tib         rb BUFSIZE
 
 align 4096
-lc_end      rb 4096
-lc_space  = $
+data_space  rb 32*1024*1024
 
 align 4096
 stack_end   rb 4096
 stack_space = $
 
-align 4096
-data_space  rb 4096
-section '.text' code readable writeable executable
+section '.text' code executable readable writeable
 
-; \ ( ignore rest of line )
-backslash:
-  _dup
-  mov al, $0A
-  call parse
-  _drop 2
+FORTHCODE '2drop', _2drop ; ( a b -- )
+  DROP 2
   ret
 
-; h. ( x -- )
-hexdot:
-  checkstk
-  bswap rax
-  mov rcx, $F0F0F0F0F0F0F0F0
-  and rcx, rax
-  xor rax, rcx
-  shr rcx, 4
-  movq xmm0, rax
-  movq xmm1, rcx
-  punpcklbw xmm1, xmm0
-  movdqa xmm0, xword [basedigits]
-  pshufb xmm0, xmm1
-  lea rax, [tob]
-  movdqa [rax], xmm0
-  mov byte [rax+16], $20
-  _dup
-  mov eax, 17
-  jmp type
-
-; . ( x -- )
-dot:
-  checkstk
-  lea rsi, [basedigits]
-  lea rdi, [nob+BUFSIZE-2]
-  mov ecx, [var_base]
-  mov r8, rax
-  mov byte [rdi+1], ' '
-  test rax, rax
-  jns .loop
-  neg rax
-.loop:
-  xor edx, edx
-  div rcx
-  mov rdx, [rsi+rdx]
-  mov byte [rdi], dl
-  dec rdi
-  test rax, rax
-  jnz .loop
-  test r8, r8
-  jns .nosign
-  mov byte [rdi], '-'
-  dec rdi
-.nosign:
-  inc rdi
-  mov rax, rdi
-  _dup
-  lea rax, [nob+BUFSIZE]
-  sub rax, rdi
-  jmp type
-
-; .S ( -- )
-dot_s:
-  _dup
-  mov rsi, rbx
-  lea rdi, [stack_space-8]
-  call cr
-  jmp .check
-.loop:
-  _dup
-  mov rax, [rsi]
-  call hexdot
-  call cr
-  lea rsi, [rsi+8]
-.check:
-  cmp rsi, rdi
-  jne .loop
-  _drop
+FORTHCODE 'accept', accept ; ( a u1 -- u2 )
+  WINENTER $30
+  mov rcx, [stdin]
+  mov rdx, [rbx]
+  mov r8d, eax
+  lea r9, [rsp+$28]
+  call [ReadFile]
+  mov eax, [rsp+$28]
+  WINLEAVE
+  NIP
   ret
 
-; CR ( -- )
-cr:
-  _dup
-  mov eax, $0A
-  jmp emit
-
-; SPACE ( -- )
-space:
-  _dup
-  mov eax, $20
-
-; EMIT ( char -- )
-emit:
-  mov cl, al
-  lea rax, [tob]
-  mov [rax], cl
-  _dup
-  mov eax, 1
-
-; TYPE ( c-addr u -- )
-type:
-  win_enter $30
+FORTHCODE 'type', type ; ( a u -- )
+  WINENTER $30
   mov rcx, [stdout]
   mov rdx, [rbx]
   mov r8d, eax
   xor r9, r9
   mov [rsp+$20], r9
   call [WriteFile]
-  win_leave
-  _drop 2
-  ret
+  WINLEAVE
+  jmp _2drop
 
-; ACCEPT ( c-addr u1 -- u2 )
-accept:
-  win_enter $50
-  virtual at rsp+$28
-    .lpNumberOfBytesRead      dd ?
-                              dd ?
-    .csbi.dwSize              dd ?
-    .csbi.dwCursorPosition    dd ?
-    .csbi.wAttributes         dw ?
-    .csbi.srWindow            rw 4
-    .csbi.dwMaximumWindowSize dd ?
-  end virtual
+start:
+  RELOCDICT forth_names, forth_symbs, forth_space
+  RELOCDICT macro_names, macro_symbs, macro_space
 
-  mov rcx, [stdin]
-  mov rdx, [rbx]
-  mov r8d, eax
-  lea r9, [.lpNumberOfBytesRead]
-  mov qword [rsp+$20], 0
-  call [ReadFile]
-
-  mov rcx, [stdout]
-  lea rdx, [.csbi.dwSize]
-  call [GetConsoleScreenBufferInfo]
-
-  mov eax, [.lpNumberOfBytesRead]
-  test eax, eax
-  je .empty
-
-  mov rdi, [rbx]
-  mov rsi, rdi
-  mov ecx, eax
-  mov al, $0A
-  repne scasb
-  cmp byte [rdi-1], $0D
-  jne @f
-  dec rdi
-@@:
-  neg ecx
-  mov edx, ecx
-  mov rcx, [stdin]
-  xor r8, r8
-  mov r9d, 1            ; FILE_CURRENT
-  call [SetFilePointer]
-
-  dec rdi
-  mov rax, rdi
-  sub rax, rsi
-
-  cmp qword [conin], 0
-  jne .echo
-  mov rsi, rax
-  mov edx, [.csbi.dwCursorPosition]
-  add edx, $FFFF0000
-  dec eax
-  or edx, eax
-  mov rcx, [stdout]
-  call [SetConsoleCursorPosition]
-  mov rax, rsi
-.leave:
-  win_leave
-  _nip
-  ret
-.empty:
-  mov rdi, [conin]
-  test rdi, rdi
-  je .leave
-  mov [stdin], rdi
-  xor eax, eax
-  mov [conin], rax
-  jmp .leave
-.echo:
-  win_leave
-  push rax
-  call type
-  pop rax
-  _dup
-  ret
-
-; REFILL ( -- )
-refill:
-  _dup
-  lea rax, [tib]
-  _dup
-  mov eax, BUFSIZE
-  call accept
-  mov dword [tib_n], eax
-  mov dword [tib_i], 0
-  test eax, eax
-  _drop
-  ret
-
-; PARSE ( c -- c-addr u )
-parse:
-  lea rsi, [tib]
-  mov edi, [tib_n]
-  mov ecx, [tib_i]
-  lea rbx, [rbx-8]
-  lea r8, [rsi+rcx]
-  mov edx, eax
-  mov [rbx], r8
-  xor eax, eax
-  cmp ecx, edi
-  jae .empty
-.scan:
-  cmp byte [rsi+rcx], dl
-  je .done
-  inc ecx
-  cmp ecx, edi
-  jb .scan
-.done:
-  lea rax, [rsi+rcx]
-  sub rax, r8
-  inc ecx
-  mov [tib_i], ecx
-.empty:
-  ret
-
-; WORD ( -- c-addr u )
-word_:
-  lea rsi, [tib]
-  mov edx, [tib_n]
-  mov ecx, [tib_i]
-  _dup
-  xor eax, eax
-  _dup
-  cmp ecx, edx
-  jae .empty
-.skip:
-  cmp byte [rsi+rcx], $20
-  ja .scan0
-  inc ecx
-  cmp ecx, edx
-  jb .skip
-.scan0:
-  lea r8, [rsi+rcx]
-  lea r9, [lname]
-  lea r10, [lname+32]
-  pxor xmm0, xmm0
-  movdqa [r9], xmm0
-.scan:
-  mov al, byte [rsi+rcx]
-  cmp al, $20
-  jbe .done
-  cmp r9, r10
-  je .next
-  mov byte [r9], al
-  inc r9
-.next:
-  inc ecx
-  cmp ecx, edx
-  jb .scan
-.done:
-  lea rax, [rsi+rcx]
-  sub rax, r8
-  inc ecx
-  mov [tib_i], ecx
-  mov [rbx], r8
-.empty:
-  ret
-
-; FIND ( c-addr u -- c-addr u | -- )
-; ZF=1 found, ZF=0 not found, dict symb in rsi
-; if found, consumes string, otherwise leaves it
-mfind:
-  mov rsi, [macro_here]
-  jmp find.shared
-find:
-  mov rsi, [forth_here]
-.shared:
-  movdqa xmm0, xword [lname]
-  jmp .next
-.loop:
-  pcmpeqb xmm1, xmm0
-  pmovmskb ecx, xmm1
-  cmp ecx, $FFFF
-  je .match
-.next:
-  lea rsi, [rsi-16]
-  movdqa xmm1, [rsi]
-  ptest xmm1, xmm1
-  jne .loop
-  or ecx, 1
-  ret
-.match:
-  _drop 2
-  mov rsi, [rsi+16*1024]
-  ret
-
-; NUMBER ( c-addr u -- x )
-; ZF=1 ok, entire string converted, ZF=0 not a number
-number:
-  test rax, rax
-  jz .empty
-  mov rsi, [rbx]
-  mov edi, [var_base]
-  xor r8, r8
-  xor r9, r9
-  cmp byte [rsi], '-'
-  sete r9b
-  add rsi, r9
-  sub rax, r9
-.loop:
-  movzx ecx, byte [rsi]
-  inc rsi
-  and cl, $7F
-  bt dword [digitmap], ecx
-  jnc .done
-  sub cl, $30
-  mov edx, ecx
-  cmp cl, 9
-  jbe .digit
-  add cl, $30
-  and cl, $DF
-  lea rdx, [rcx-('0'+7)]
-.digit:
-  cmp edx, edi
-  jge .error
-  imul r8, rdi
-  add r8, rdx
-  dec rax
-  jnz .loop
-.error:
-  test r9, r9
-  je .done
-  neg r8
-.done:
-  test eax, eax
-  mov rax, r8
-.empty:
-  _nip
-  ret
-
-; HEADER ( -- )
-header:
-  call word_
-  movdqa xmm0, xword [lname]
-  mov rdi, [dict_here]
-  mov rdx, [rdi]
-  movdqa [rdx], xmm0
-  movq xmm1, [code_here]
-  movdqa [rdx+16*1024], xmm1
-  add rdx, 16
-  mov [rdi], rdx
-  _drop 2
-  ret
-
-; CREATE ( -- )
-create:
-  call header
-
-; default DOES> semantics
-; 0000: 48 8D 5B F8        lea         rbx,[rbx-8]
-; 0004: 48 89 03           mov         qword ptr [rbx],rax
-; 0007: 48 8D 05 00 00 00  lea         rax,[.data]
-;       00
-; 000E: C3  
-  mov rdi, [code_here]
-  mov rdx, [data_here]
-  mov dword [rdi+$00], $F85B8D48
-  mov dword [rdi+$04], $038948
-  mov dword [rdi+$07], $058D48
-  mov byte  [rdi+$0E], $C3
-  add rdi, $0E
-  sub rdx, rdi
-  mov dword [rdi-$04], edx
-  inc rdi
-  mov [code_here], rdi
-  ret
-
-; DOES>
-does:
-  pop rdx                ; addr of instructions after DOES>
-  mov rdi, [code_here]
-  add rdi, 4             ; -4 for size of jump (rel32)
-  sub rdx, rdi
-  mov byte  [rdi-5], $E9 ; backpatch jmp, overwrite old ret
-  mov dword [rdi-4], edx
-  mov [code_here], rdi
-  ret
-
-; , ( x -- )
-comma:
-  mov ecx, 8
-.shared:
-  mov rdi, [data_here]
-  mov [rdi], al
-  lea rdi, [rdi+rcx]
-  mov [data_here], rdi
-  _drop
-  ret
-bcomma:
-  mov ecx, 1
-  jmp comma.shared
-wcomma:
-  mov ecx, 2
-  jmp comma.shared
-dcomma:
-  mov ecx, 4
-  jmp comma.shared
-
-; ,x ( x -- )
-comma_x:
-  mov ecx, 8
-.shared:
-  mov rdi, [code_here]
-  mov [rdi], rax
-  lea rdi, [rdi+rcx]
-  mov [code_here], rdi
-@@:
-  _drop
-  ret
-bcomma_x:
-  mov ecx, 1
-  jmp comma_x.shared
-wcomma_x:
-  mov ecx, 2
-  jmp comma_x.shared
-dcomma_x:
-  mov ecx, 4
-  jmp comma_x.shared
-patch_x:
-  mov rdi, [code_here]
-  mov [rdi-8], rax
-  jmp @b
-bpatch_x:
-  mov rdi, [code_here]
-  mov [rdi-1], al
-  jmp @b
-dpatch_x:
-  mov rdi, [code_here]
-  mov [rdi-4], eax
-  jmp @b
-
-; ] ( switch to compiler )
-rbracket:
-  lea rdx, [compile]
-  mov [action], rdx
-  ret
-
-; FORTH ( start compiling into forth dict )
-forth:
-  lea rdi, [forth_here]
-@@:
-  mov [dict_here], rdi
-  ret
-; MACRO ( start compiling into macro dict )
-macro_:
-  lea rdi, [macro_here]
-  jmp @b
-
-; HERE ( -- addr )
-here:
-  _dup
-  mov rax, [data_here]
-  ret
-
-; XHERE ( -- addr )
-xhere:
-  _dup
-  mov rax, [code_here]
-  ret
-
-xrel:
-  sub rax, [code_here]
-  ret
-
-; INST ( -- )
-inst:
-  call header
-  call word_
-  call number
-  jne abort.notfound
-; 0000: B9 04 00 00 00     mov         ecx,4
-; 0005: E8 00 00 00 00     call        00
-  mov rdi, [code_here]
-  lea rdx, [inst.docopy-$0A]
-  sub rdx, rdi
-  mov byte  [rdi+$00], $B9
-  mov dword [rdi+$01], eax
-  mov byte  [rdi+$05], $E8
-  mov dword [rdi+$06], edx
-  add rdi, $0A
-  mov [code_here], rdi
-  push r12
-  mov r12, rax
-  _drop
-.loop:
-  call word_
-  call number
-  jne abort.notfound
-  call bcomma_x
-  dec r12
-  jnz .loop
-  pop r12
-  ret
-.docopy:
-  pop rsi
-  mov rdi, [code_here]
-  rep movsb
-  mov [code_here], rdi
-  ret
-
-; F' ( -- xt )
-ftick:
-  call word_
-  call find
-  jne @f
-.shared:
-  _dup
-  mov rax, rsi
-  ret
-
-; M' ( -- xt )
-mtick:
-  call word_
-  call mfind
-  je ftick.shared
-@@:
-  _drop 2
-  jmp abort.notfound
-
-; [ ( switch to interpreter )
-lbracket:
-  lea rdx, [interpret]
-  mov [action], rdx
-  ret
-
-; ; ( end current definition )
-semicolon:
-  call lbracket
-exit:
-  mov rdi, [code_here]
-  mov byte [rdi], $C3
-  inc rdi
-  mov [code_here], rdi
-  jmp lc_reset
-
-; FOR (  -- orig )
-for:
-; 0000: 41 54              push        r12
-; 0002: 49 89 C4           mov         r12,rax
-; 0005: 48 8B 03           mov         rax,qword ptr [rbx]
-; 0008: 48 8D 5B 08        lea         rbx,[rbx+8]
-  mov rdi, [code_here]
-  mov word  [rdi+$00], $5441
-  mov dword [rdi+$02], $C48949
-  mov dword [rdi+$05], $038B48
-  mov dword [rdi+$08], $085B8D48
-  add rdi, 12
-  mov [code_here], rdi
-  _dup
-  mov rax, rdi
-  ret
-
-; NEXT ( orig -- )
-next:
-; 0000: 49 FF CC           dec         r12
-; 0003: 75 00              jne         00
-; 0003: 0F 85 00 00 00 00  jne         00
-; 0005: 41 5C              pop         r12
-  mov rdi, [code_here]
-  mov dword [rdi+$00], $CCFF49
-  sub rax, 5
-  sub rax, rdi
-  add rdi, 3
-  cmp eax, -128
-  jl .rel32
-  mov byte  [rdi+$00], $75
-  mov byte  [rdi+$01], al
-  add rdi, 2
-  jmp .rest
-.rel32:
-  sub rax, 4
-  mov  word [rdi+$00], $850F
-  mov dword [rdi+$02], eax
-  add rdi, 6
-.rest:
-  mov word  [rdi+$00], $5C41
-  add rdi, 2
-  mov [code_here], rdi
-  _drop
-  ret
-
-; LOOP ( orig -- )
-loop_:
-; 0000: 49 FF C4           inc         r12
-; 0003: 4D 39 EC           cmp         r12,r13
-; 0006: 75 00              jne         00
-; 0006: 0F 85 00 00 00 00  jne         00
-; 0008: 41 5C              pop         r12
-; 000A: 41 5D              pop         r13
-  mov rdi, [code_here]
-  mov dword [rdi+$00], $C4FF49
-  mov dword [rdi+$03], $EC394D
-  sub rax, $08
-  sub rax, rdi
-  add rdi, 6
-  cmp eax, -128
-  jl .rel32
-  mov byte  [rdi+$00], $75
-  mov byte  [rdi+$01], al
-  add rdi, 2
-  jmp .rest
-.rel32:
-  sub rax, $04
-  mov word  [rdi+$00], $850F
-  mov dword [rdi+$02], eax
-  add rdi, 6
-.rest:
-  mov dword [rdi+$00], $5D415C41
-  add rdi, 4
-  mov [code_here], rdi
-  _drop
-  ret
-
-; I ( -- x )
-i:
-  mov rdi, [code_here]
-  mov dword [rdi+$00], $F85B8D48
-  mov dword [rdi+$04], $038948
-  mov dword [rdi+$07], $E0894C
-  add rdi, 10
-  mov [code_here], rdi
-  ret
-
-; ( orig -- )
-then:
-  mov rdi, [code_here]
-  sub rdi, rax
-  mov dword [rax-4], edi
-  _drop
-  ret
-
-interpret:
-  call find
-  jne .number
-  jmp rsi
-.number:
-  call number
-  jne abort.notfound
-  ret
-
-lc_reset:
-  lea rdx, [lc_space]
-  mov [lc_stack], rdx
-  ret
-
-lc_word:
-  mov rdi, [lc_stack]
-  sub rdi, 4
-  mov dword [rdi], 0
-  mov [lc_stack], rdi
-  ret
-
-lc_lit:
-  mov rdi, [lc_stack]
-  sub rdi, 4
-  mov dword [rdi], $00110001 ; 17 bytes, type = lit
-  mov [lc_stack], rdi
-  ret
-
-lc_lit?:
-  mov rdi, [lc_stack]
-  mov edx, [rdi]
-  and edx, $FFFF
-  cmp edx, 1
-  ret
-
-; ( -- x )
-pop_lit:
-  _dup
-  mov rsi, [lc_stack]
-  mov edx, [rsi]
-  add [lc_stack], 4
-  shr edx, 16
-  mov rdi, [code_here]
-  mov rax, [rdi-8]    ; TODO: only handles mov rax, imm64 for now
-  sub rdi, rdx        ; undo code for literal (dup + mov)
-  mov [code_here], rdi
-  ret
-
-; SV@ ( n -- x )
-sv_fetch:
-  lea rdi, [sv_space]
-  mov rax, [rdi+rax*8]
-  ret
-
-; SV! ( x n -- )
-sv_store:
-  mov rdx, [rbx]
-  lea rdi, [sv_space]
-  mov [rdi+rax*8], rdx
-  _drop 2
-  ret
-
-compile:
-  call mfind
-  jne .call
-  call rsi
-  jmp lc_word
-.call:
-  call find
-  jne .number
-  mov rdi, [code_here]
-  mov byte [rdi], $E8
-  add rdi, 5
-  sub rsi, rdi
-  mov dword [rdi-4], esi
-  mov [code_here], rdi
-  ret
-.number:
-  call number
-  jne abort.notfound
-  call lc_lit
-  mov rdi, [code_here]
-  mov dword [rdi+$00], $F85B8D48 ; lea rbx, [rbx-8]
-  mov dword [rdi+$04], $038948   ; mov [rbx], rax
-  mov word  [rdi+$07], $B848     ; mov rax, 0
-  mov qword [rdi+$09], rax
-  add rdi, 17
-  mov [code_here], rdi
-  _drop
-  ret
-
-quit:
-  call refill
-  je quit
-  call space
-.loop:
-  call word_
-  test eax, eax
-  jz .refill
-  call qword [action]
-  jmp .loop
-.refill:
-  lea rdx, [tob]
-  mov dword [rdx+0], $0D6B6F20 ; ok
-  mov byte  [rdx+4], $0A
-  mov [rbx], rdx
-  mov eax, 5
-  call type
-  jmp quit
-
-abort:
-.underflow:
-  _dup
-  lea rax, [tob]
-  mov dword [rax], '#UF'
-  _dup
-  mov eax, 3
-  jmp .print
-.notfound:
-  _dup
-  lea rax, [tob]
-  movdqa xmm0, xword [lname]
-  mov word [rax+0], '? '
-  movdqu [rax+2], xmm0
-  _dup
-  mov eax, 18
-.print:
-  call type
-  call cr
-.reset:
-  mov rsp, [reset_rsp]
-  lea rbx, [stack_space]
-  cmp [conin], 0
-  je quit
-  win_enter $20
-  mov rcx, [stdin]
-  mov edx, 0
-  xor r8, r8
-  mov r9d, 2 ; FILE_END
-  call [SetFilePointer]
-  win_leave
-  jmp quit
-
-_movedicts:
-  lea rdi, [forth_space]
-  lea rsi, [forth_name]
-  mov ecx, forth_name.size
-  push rcx
-  rep movsb
-  lea rdi, [forth_space+16*1024]
-  lea rsi, [forth_symb]
-  pop rcx
-  rep movsb
-  lea rdi, [macro_space]
-  lea rsi, [macro_name]
-  mov ecx, macro_name.size
-  push rcx
-  rep movsb
-  lea rdi, [macro_space+16*1024]
-  lea rsi, [macro_symb]
-  pop rcx
-  rep movsb
-  ret
-
-_wininit:
-  win_enter $40
-  mov ecx, -10        ; stdin
+  WINENTER $20
+  mov ecx, -10
   call [GetStdHandle]
   mov [stdin], rax
-  mov rcx, rax
-  call [GetFileType]
-  cmp al, 2
-  je .noredir
-  lea rcx, [conin_str]
-  mov edx, $80000000     ; GENERIC_READ
-  mov r8d, 1             ; FILE_SHARE_READ
-  xor r9, r9
-  mov dword [rsp+$20], 3 ; OPEN_EXISTING
-  mov dword [rsp+$28], r9d
-  mov qword [rsp+$30], r9
-  call [CreateFileA]
-  mov [conin], rax
-.noredir:
-  mov ecx, -11        ; stdout
+  mov ecx, -11
   call [GetStdHandle]
   mov [stdout], rax
-  win_leave
-  ret
+  WINLEAVE
 
-_start:
-  call _movedicts
-  call _wininit
-  mov [reset_rsp], rsp
   lea rbx, [stack_space]
-  jmp quit
 
-align 4096
-code_space rb 4096
+  DUP
+  lea rax, [tib]
+  DUP
+  mov eax, BUFSIZE
+  call accept
+  mov edx, eax
+  lea rax, [tib]
+  DUP
+  mov eax, edx
+  call type
+
+  lea rdi, [stack_space]
+  cmp rbx, rdi
+  jne badstk
+bye:
+  WINENTER $20
+@@:
+  xor ecx, ecx
+  jmp [ExitProcess]
+badstk:
+  WINENTER $20
+  xor ecx, ecx
+  lea rdx, [.str1]
+  lea r8d, [.str2]
+  xor r9, r9
+  call [MessageBoxA]
+  jmp @b
+.str1: db '#ERR: Unbalanced data stack', 0
+.str2: db 'Error', 0
+
+section '.idata' data readable
+
+IMPORT \
+kernel32, <\
+  ReadFile,\
+  WriteFile,\
+  GetStdHandle,\
+  ExitProcess>,\
+user32, <\
+  MessageBoxA>
+
+forth_names:
+  FORTHNAMES
+.size = $ - forth_names
+forth_symbs:
+  FORTHSYMBS
+.size = $ - forth_symbs
+
+macro_names:
+  MACRONAMES
+.size = $ - macro_names
+macro_symbs:
+  MACROSYMBS
+.size = $ - macro_symbs
+
+assert forth_names.size = forth_symbs.size
+assert macro_names.size = macro_symbs.size
+
+macro PRINT n {
+  local d
+  repeat 4
+    d = '0' + n shr (16-%*4) and $F
+    if d > '9'
+      d = d + 'A'-'9'-1
+    end if
+    display d
+  end repeat
+}
+
+display 'forths: '
+PRINT (forth_names.size / 16 - 1)
+display $0D, $0A, 'macros: '
+PRINT (macro_names.size / 16 - 1)

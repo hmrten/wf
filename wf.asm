@@ -166,6 +166,7 @@ macro_space rb 32*1024
 
 BUFSIZE equ 256
 tib         rb BUFSIZE
+tob         rb BUFSIZE
 
 align 4096
 data_space  rb 32*1024*1024
@@ -176,19 +177,67 @@ stack_space = $
 
 section '.text' code executable readable writeable
 
-FORTHCODE '2drop', _2drop ; ( a b -- )
-  DROP 2
-  ret
-
 FORTHCODE 'accept', accept ; ( a u1 -- u2 )
-  WINENTER $30
+  mov rdi, [rbx]
+  WINENTER $50
+  virtual at rsp+$28
+    .nread                  dd ?
+                            dd ? ; pad
+    .bi_dwSize              dd ?
+    .bi_dwCursorPosition    dd ?
+    .bi_wAttributes         dw ?
+    .bi_srWindow            rw 4
+    .bi_dwMaximumWindowSize dd ?
+  end virtual
   mov rcx, [stdin]
-  mov rdx, [rbx]
+  mov rdx, rdi
   mov r8d, eax
-  lea r9, [rsp+$28]
+  lea r9, [.nread]
+  mov qword [rsp+$20], 0
   call [ReadFile]
-  mov eax, [rsp+$28]
+
+  mov eax, [.nread]
+  test eax, eax
+  je .empty
+
+  ; trim trailing [\r]\n
+  mov rsi, rdi
+  mov ecx, eax
+  mov al, $0A
+  repne scasb
+  cmp byte [rdi-2], $0D
+  jne @f
+  dec rdi ; trim \r
+@@:
+  dec rdi ; trim \n
+
+  ; adjust file pointer if we read past first [\r]\n
+  ; (can happen when stdin is redicted to a file)
+  neg ecx
+  mov edx, ecx
+  mov rcx, [stdin]
+  xor r8, r8
+  mov r9d, 1            ; FILE_CURRENT
+  call [SetFilePointer]
+
+  mov rax, rdi
+  sub rax, rsi
+
+  mov esi, eax
+  mov rcx, [stdout]
+  lea rdx, [.bi_dwSize]
+  call [GetConsoleScreenBufferInfo]
+  mov edx, [.bi_dwCursorPosition]
+  add edx, $FFFF0000
+  or edx, esi
+  mov rcx, [stdout]
+  call [SetConsoleCursorPosition]
+  mov eax, esi
+
+.empty:
   WINLEAVE
+
+FORTHCODE 'nip', nip ; ( x y -- x )
   NIP
   ret
 
@@ -201,7 +250,10 @@ FORTHCODE 'type', type ; ( a u -- )
   mov [rsp+$20], r9
   call [WriteFile]
   WINLEAVE
-  jmp _2drop
+
+FORTHCODE '2drop', _2drop ; ( x y -- )
+  DROP 2
+  ret
 
 start:
   RELOCDICT forth_names, forth_symbs, forth_space
@@ -223,6 +275,15 @@ start:
   DUP
   mov eax, BUFSIZE
   call accept
+
+  DUP
+  lea rax, [tob]
+  mov dword [rax+0], $0D6B6F20 ; ok
+  mov byte  [rax+4], $0A
+  DUP
+  mov eax, 5
+  call type
+
   mov edx, eax
   lea rax, [tib]
   DUP
@@ -252,6 +313,9 @@ section '.idata' data readable
 
 IMPORT \
 kernel32, <\
+  GetConsoleScreenBufferInfo,\
+  SetConsoleCursorPosition,\
+  SetFilePointer,\
   ReadFile,\
   WriteFile,\
   GetStdHandle,\

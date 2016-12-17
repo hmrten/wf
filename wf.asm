@@ -148,6 +148,12 @@ macro NIP {
   lea rbx, [rbx+8]
 }
 
+macro CHECKSTK {
+  lea rcx, [stack_space]
+  cmp rbx, rcx
+  je abort.uf
+}
+
 section '.data' data readable writeable
 
 align 16
@@ -155,6 +161,8 @@ basedigits db '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 digitmap   dq $03FF000000000000, $07FFFFFE07FFFFFE
 
 align 8
+action     dq interpret
+
 user_vars:
 USERVAR 'fd'  , fd, forth_space+forth_names.size
 USERVAR 'md'  , md, macro_space+macro_names.size
@@ -168,6 +176,7 @@ USERVAR 'base', base, 16
 align 8
 stdin       dq ?
 stdout      dq ?
+rsp0        dq ?
 
 align 4096
 forth_space rb 32*1024
@@ -176,9 +185,11 @@ macro_space rb 32*1024
 BUFSIZE equ 256
 tib         rb BUFSIZE
 tob         rb BUFSIZE
+nob         rb BUFSIZE
 
 align 16
 lname       rb 32
+lname_n     db ?
 
 align 4096
 data_space  rb 32*1024*1024
@@ -187,7 +198,106 @@ align 4096
 stack_end   rb 4096
 stack_space = $
 
-section '.text' code executable readable writeable
+section '.text' code executable readable
+
+; H. ( x -- )
+FORTHCODE 'h.', hexdot
+  CHECKSTK
+  bswap rax
+  mov rcx, $F0F0F0F0F0F0F0F0
+  and rcx, rax
+  xor rax, rcx
+  shr rcx, 4
+  movq xmm0, rax
+  movq xmm1, rcx
+  punpcklbw xmm1, xmm0
+  movdqa xmm0, xword [basedigits]
+  pshufb xmm0, xmm1
+  lea rax, [tob]
+  movdqa [rax], xmm0
+  mov byte [rax+16], $20
+  DUP
+  mov eax, 17
+  jmp type
+
+; . ( x -- )
+FORTHCODE '.', dot
+  CHECKSTK
+  lea rsi, [basedigits]
+  lea rdi, [nob+BUFSIZE-2]
+  mov ecx, [base]
+  mov r8, rax
+  mov byte [rdi+1], ' '
+  test rax, rax
+  jns .loop
+  neg rax
+.loop:
+  xor edx, edx
+  div rcx
+  mov rdx, [rsi+rdx]
+  mov byte [rdi], dl
+  dec rdi
+  test rax, rax
+  jnz .loop
+  test r8, r8
+  jns .nosign
+  mov byte [rdi], '-'
+  dec rdi
+.nosign:
+  inc rdi
+  mov rax, rdi
+  DUP
+  lea rax, [nob+BUFSIZE]
+  sub rax, rdi
+  jmp type
+
+; .S ( -- )
+FORTHCODE '.s', dot_s
+  DUP
+  mov rsi, rbx
+  lea rdi, [stack_space-8]
+  call cr
+  jmp .check
+.loop:
+  DUP
+  mov rax, [rsi]
+  call hexdot
+  call cr
+  lea rsi, [rsi+8]
+.check:
+  cmp rsi, rdi
+  jne .loop
+  DROP
+  ret
+
+; .DEPTH ( -- )
+FORTHCODE '.depth', dot_depth
+  DUP
+  lea rax, [stack_space]
+  sub rax, rbx
+  shr rax, 3
+  dec rax
+  jmp dot
+
+; COLOR ( x -- )
+FORTHCODE 'color', color
+  mov edx, eax
+  DROP
+.set:
+  push rax
+  WINENTER $20
+  mov rcx, [stdout]
+  call [SetConsoleTextAttribute]
+  WINLEAVE
+  pop rax
+  ret
+
+FORTHCODE 'red', red
+  mov edx, $0C ; FOREGROUND_RED | FOREGROUND_INTENSITY
+  jmp color.set
+FORTHCODE 'silver', silver
+  mov edx, $07
+  jmp color.set
 
 ; NUMBER ( a u -- x )
 ; ZF=1 ok, entire string converted, ZF=0 not a number
@@ -268,6 +378,9 @@ FORTHCODE 'word', word_
   cmp ecx, edx
   jb .scan
 .done:
+  lea r10, [lname]
+  sub r9, r10
+  mov byte [lname_n], r9b
   lea rax, [rsi+rcx]
   sub rax, r8
   inc ecx
@@ -404,6 +517,91 @@ FORTHCODE '2drop', _2drop
   DROP 2
   ret
 
+; CR ( -- )
+FORTHCODE 'cr', cr
+  DUP
+  mov al, $0A
+  jmp emit
+
+; SPACE ( -- )
+FORTHCODE 'space', space
+  DUP
+  mov al, ' '
+
+; EMIT ( ch -- )
+FORTHCODE 'emit', emit
+  mov dl, al
+  lea rax, [tob]
+  mov byte [rax], dl
+  DUP
+  mov eax, 1
+  jmp type
+
+
+interpret:
+  call find
+  jne .number
+  jmp qword [rsi]
+.number:
+  call number
+  jne abort.notfnd
+  ret
+
+quit:
+  call refill
+  je .prompt0
+  call space
+.loop:
+  call word_
+  test eax, eax
+  je .prompt
+  call qword [action]
+  jmp .loop
+.prompt0:
+  call space
+  lea rbx, [rbx-16]
+.prompt:
+  lea rdi, [tob]
+  mov dword [rdi+0], $3A6B6F20 ; ok:
+  mov [rbx], rdi
+  mov eax, 4
+  call type
+  call dot_depth
+  call cr
+  jmp quit
+
+abort:
+.uf:
+  lea rbx, [rbx-16]
+  mov [rbx+8], rax
+  lea rdi, [tob]
+  mov dword [rdi], '#UF'
+  mov [rbx], rdi
+  mov eax, 3
+  jmp .print
+.notfnd:
+  lea rbx, [rbx-16]
+  mov [rbx+8], rax
+  lea rdi, [tob]
+  push rdi
+  mov word [rdi], '? '
+  add rdi, 2
+  mov eax, 2
+  lea rsi, [lname]
+  movzx ecx, byte [lname_n]
+  add eax, ecx
+  rep movsb
+  pop qword [rbx]
+.print:
+  call red
+  call type
+  call cr
+  call silver
+.reset:
+  mov rsp, [rsp0]
+  lea rbx, [stack_space]
+  jmp quit
+
 start:
   RELOCDICT forth_names, forth_symbs, forth_space
   RELOCDICT macro_names, macro_symbs, macro_space
@@ -419,52 +617,9 @@ start:
 
   lea rbx, [stack_space]
   lea r15, [user_vars]
+  mov [rsp0], rsp
+  jmp quit
 
-  call refill
-
-  DUP
-  lea rax, [tob]
-  mov dword [rax+0], $0D6B6F20 ; ok
-  mov byte  [rax+4], $0A
-  DUP
-  mov eax, 5
-  call type
-
-@@:
-  call word_
-  test eax, eax
-  jz bye
-  call find
-  je bye0
-
-  DROP 2
-  DUP
-  lea rdi, [lname]
-  xor eax, eax
-  mov ecx, -1
-  repne scasb
-  not ecx
-  dec ecx
-  lea rax, [lname]
-  DUP
-  mov eax, ecx
-  call type
-
-cr:
-  lea rbx, [rbx-16]
-  mov [rbx+8], rax
-  lea rdi, [tob]
-  mov word [rdi], $0A0D ; \r\n
-  mov [rbx], rdi
-  mov eax, 2
-  call type
-  jmp @b
-
-  ; mov edx, eax
-  ; lea rax, [tib]
-  ; DUP
-  ; mov eax, edx
-  ; call type
 bye0:
   lea rdi, [stack_space]
   cmp rbx, rdi
@@ -489,6 +644,7 @@ section '.idata' data readable
 
 IMPORT \
 kernel32, <\
+  SetConsoleTextAttribute,\
   GetConsoleScreenBufferInfo,\
   SetConsoleCursorPosition,\
   SetFilePointer,\

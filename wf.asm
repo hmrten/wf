@@ -164,12 +164,13 @@ align 8
 action     dq interpret
 
 user_vars:
-USERVAR 'fd'  , fd, forth_space+forth_names.size
-USERVAR 'md'  , md, macro_space+macro_names.size
-USERVAR 'hd'  , hd, fd
-USERVAR '#tib', tib_n, 0
-USERVAR '>in' , tib_i, 0
-USERVAR 'base', base, 16
+USERVAR 'fd'   , fd, forth_space+forth_names.size
+USERVAR 'md'   , md, macro_space+macro_names.size
+USERVAR 'hd'   , hd, fd
+USERVAR '#tib' , tib_n, 0
+USERVAR '>in'  , tib_i, 0
+USERVAR 'base' , base, 16
+USERVAR 'xhere', xhere, code_space
 
 ; == UNINITIALIZED DATA
 
@@ -200,6 +201,121 @@ stack_end   rb 4096
 stack_space = $
 
 section '.text' code executable readable
+
+; ACCEPT ( a u1 -- u2 )
+FORTHCODE 'accept', accept
+  mov rdi, [rbx]
+  WINENTER $50
+  virtual at rsp+$28
+    .nread                  dd ?
+                            dd ? ; align .bi struct
+    .bi_dwSize              dd ?
+    .bi_dwCursorPosition    dd ?
+    .bi_wAttributes         dw ?
+    .bi_srWindow            rw 4
+    .bi_dwMaximumWindowSize dd ?
+  end virtual
+  mov rcx, [stdin]
+  mov rdx, rdi
+  mov r8d, eax
+  lea r9, [.nread]
+  mov qword [rsp+$20], 0
+  call [ReadFile]
+
+  mov eax, [.nread]
+  test eax, eax
+  je .empty
+
+  ; trim trailing [\r]\n
+  mov rsi, rdi
+  mov ecx, eax
+  mov al, $0A
+  repne scasb
+  cmp byte [rdi-2], $0D
+  jne @f
+  dec rdi ; drop \r
+@@:
+  dec rdi ; drop \n
+
+  ; adjust file pointer if we read past first [\r]\n
+  ; (can happen when stdin is redirected to a file)
+  neg ecx
+  mov edx, ecx
+  mov rcx, [stdin]
+  xor r8, r8
+  mov r9d, 1            ; FILE_CURRENT
+  call [SetFilePointer]
+
+  mov rax, rdi
+  sub rax, rsi
+
+  mov esi, eax
+  mov rcx, [stdout]
+  lea rdx, [.bi_dwSize]
+  call [GetConsoleScreenBufferInfo]
+  mov edx, [.bi_dwCursorPosition]
+  add edx, $FFFF0000
+  or edx, esi
+  mov rcx, [stdout]
+  call [SetConsoleCursorPosition]
+  mov eax, esi
+
+.empty:
+  WINLEAVE
+
+; NIP ( x y -- x )
+FORTHCODE 'nip', nip
+  NIP
+  ret
+
+; REFILL ( -- ZF )
+FORTHCODE 'refill', refill
+  lea rbx, [rbx-16]
+  mov [rbx+8], rax
+  lea rdx, [tib]
+  mov [rbx], rdx
+  mov eax, BUFSIZE
+  call accept
+  mov dword [tib_n], eax
+  mov dword [tib_i], 0
+  test eax, eax
+
+; DROP ( x -- )
+FORTHCODE 'drop', drop
+  DROP
+  ret
+
+; CR ( -- )
+FORTHCODE 'cr', cr
+  DUP
+  mov dl, $0A
+  jmp emit.0
+
+; SPACE ( -- )
+FORTHCODE 'space', space
+  DUP
+  mov al, ' '
+
+; EMIT ( ch -- )
+FORTHCODE 'emit', emit
+  mov dl, al
+.0:
+  lea rax, [tob]
+  mov byte [rax], dl
+  DUP
+  mov eax, 1
+
+; TYPE ( a u -- )
+FORTHCODE 'type', type
+  WINENTER $30
+  mov rcx, [stdout]
+  mov rdx, [rbx]
+  mov r8d, eax
+  xor r9, r9
+  mov [rsp+$20], r9
+  call [WriteFile]
+  WINLEAVE
+  jmp _2drop
 
 ; H. ( x -- )
 FORTHCODE 'h.', hexdot
@@ -300,49 +416,6 @@ FORTHCODE 'silver', silver
   mov edx, $07
   jmp color.set
 
-; NUMBER ( a u -- x )
-; ZF=1 ok, entire string converted, ZF=0 not a number
-FORTHCODE 'number', number
-  test rax, rax
-  jz .empty
-  mov rsi, [rbx]
-  mov edi, [base]
-  xor r8, r8
-  xor r9, r9
-  cmp byte [rsi], '-'
-  sete r9b
-  add rsi, r9
-  sub rax, r9
-.loop:
-  movzx ecx, byte [rsi]
-  inc rsi
-  and cl, $7F
-  bt dword [digitmap], ecx
-  jnc .done
-  sub cl, $30
-  mov edx, ecx
-  cmp cl, 9
-  jbe .digit
-  add cl, $30
-  and cl, $DF
-  lea rdx, [rcx-('0'+7)]
-.digit:
-  cmp edx, edi
-  jge .error
-  imul r8, rdi
-  add r8, rdx
-  dec rax
-  jnz .loop
-.error:
-  test r9, r9
-  je .done
-  neg r8
-.done:
-  test eax, eax
-  mov rax, r8
-.empty:
-  jmp nip
-
 ; WORD ( -- a u )
 FORTHCODE 'word', word_
   lea rsi, [tib]
@@ -390,100 +463,118 @@ FORTHCODE 'word', word_
 .empty:
   ret
 
-; REFILL ( -- ZF )
-FORTHCODE 'refill', refill
-  lea rbx, [rbx-16]
-  mov [rbx+8], rax
-  lea rdx, [tib]
-  mov [rbx], rdx
-  mov eax, BUFSIZE
-  call accept
-  mov dword [tib_n], eax
-  mov dword [tib_i], 0
+; NUMBER ( a u -- x )
+; ZF=1 ok, entire string converted, ZF=0 not a number
+FORTHCODE 'number', number
+  test rax, rax
+  jz .empty
+  mov rsi, [rbx]
+  mov edi, [base]
+  xor r8, r8
+  xor r9, r9
+  cmp byte [rsi], '-'
+  sete r9b
+  add rsi, r9
+  sub rax, r9
+.loop:
+  movzx ecx, byte [rsi]
+  inc rsi
+  and cl, $7F
+  bt dword [digitmap], ecx
+  jnc .done
+  sub cl, $30
+  mov edx, ecx
+  cmp cl, 9
+  jbe .digit
+  add cl, $30
+  and cl, $DF
+  lea rdx, [rcx-('0'+7)]
+.digit:
+  cmp edx, edi
+  jge .error
+  imul r8, rdi
+  add r8, rdx
+  dec rax
+  jnz .loop
+.error:
+  test r9, r9
+  je .done
+  neg r8
+.done:
   test eax, eax
+  mov rax, r8
+.empty:
+  jmp nip
 
-; DROP ( x -- )
-FORTHCODE 'drop', drop
+; HEADER ( -- )
+FORTHCODE 'header', header
+  call word_
+  movdqa xmm0, xword [lname]
+  mov rdx, [hd]
+  mov rdi, [rdx]
+  movdqa [rdi], xmm0
+  mov rcx, [xhere]
+  mov [rdi+16*1024], rcx
+  add rdi, 16
+  mov [rdx], rdi
+  jmp _2drop
+
+; ,x ( x -- )
+FORTHCODE ',x', comma_x
+  mov rdi, [xhere]
+  mov byte [rdi], al
+  inc qword [xhere]
   DROP
   ret
 
-; ACCEPT ( a u1 -- u2 )
-FORTHCODE 'accept', accept
-  mov rdi, [rbx]
-  WINENTER $50
-  virtual at rsp+$28
-    .nread                  dd ?
-                            dd ? ; align .bi struct
-    .bi_dwSize              dd ?
-    .bi_dwCursorPosition    dd ?
-    .bi_wAttributes         dw ?
-    .bi_srWindow            rw 4
-    .bi_dwMaximumWindowSize dd ?
-  end virtual
-  mov rcx, [stdin]
-  mov rdx, rdi
-  mov r8d, eax
-  lea r9, [.nread]
-  mov qword [rsp+$20], 0
-  call [ReadFile]
-
-  mov eax, [.nread]
-  test eax, eax
-  je .empty
-
-  ; trim trailing [\r]\n
-  mov rsi, rdi
-  mov ecx, eax
-  mov al, $0A
-  repne scasb
-  cmp byte [rdi-2], $0D
-  jne @f
-  dec rdi ; drop \r
+; FORTH ( switch to compiling into forth dict )
+FORTHCODE 'forth', forth
+  lea rdi, [fd]
 @@:
-  dec rdi ; drop \n
-
-  ; adjust file pointer if we read past first [\r]\n
-  ; (can happen when stdin is redirected to a file)
-  neg ecx
-  mov edx, ecx
-  mov rcx, [stdin]
-  xor r8, r8
-  mov r9d, 1            ; FILE_CURRENT
-  call [SetFilePointer]
-
-  mov rax, rdi
-  sub rax, rsi
-
-  mov esi, eax
-  mov rcx, [stdout]
-  lea rdx, [.bi_dwSize]
-  call [GetConsoleScreenBufferInfo]
-  mov edx, [.bi_dwCursorPosition]
-  add edx, $FFFF0000
-  or edx, esi
-  mov rcx, [stdout]
-  call [SetConsoleCursorPosition]
-  mov eax, esi
-
-.empty:
-  WINLEAVE
-
-; NIP ( x y -- x )
-FORTHCODE 'nip', nip
-  NIP
+  mov [hd], rdi
   ret
 
-; TYPE ( a u -- )
-FORTHCODE 'type', type
-  WINENTER $30
-  mov rcx, [stdout]
-  mov rdx, [rbx]
-  mov r8d, eax
-  xor r9, r9
-  mov [rsp+$20], r9
-  call [WriteFile]
-  WINLEAVE
-  jmp _2drop
+; MACRO ( switch to compiling into macro dict )
+FORTHCODE 'macro', macro_
+  lea rdi, [md]
+  jmp @b
+
+; ] ( switch to compiler )
+FORTHCODE ']', rbrack
+  mov qword [action], compile
+  ret
+
+; [ ( switch to interpreter )
+MACROCODE '[', lbrack
+  mov qword [action], interpret
+  ret
+
+; ; ( end current definition )
+MACROCODE ';', semi
+  call lbrack
+  mov rdi, [xhere]
+  mov byte [rdi], $C3
+  inc qword [xhere]
+  ret
+
+; ASM ( parse: "n" n*i opcodes and assemble inline -- )
+MACROCODE 'asm', asm
+  call word_
+  call number
+  jne abort.notfnd
+  push r12
+  mov r12, rax
+  DROP
+.loop:
+  call word_
+  call number
+  jne abort.notfnd
+  call comma_x
+  dec r12
+  jnz .loop
+  pop r12
+.docopy:
+  ret
 
 ; [M]FIND ( a u -- a u | -- )
 ; ZF=1 found, ZF=0 not found, symb offset in rsi
@@ -518,26 +609,6 @@ FORTHCODE '2drop', _2drop
   DROP 2
   ret
 
-; CR ( -- )
-FORTHCODE 'cr', cr
-  DUP
-  mov al, $0A
-  jmp emit
-
-; SPACE ( -- )
-FORTHCODE 'space', space
-  DUP
-  mov al, ' '
-
-; EMIT ( ch -- )
-FORTHCODE 'emit', emit
-  mov dl, al
-  lea rax, [tob]
-  mov byte [rax], dl
-  DUP
-  mov eax, 1
-  jmp type
-
 interpret:
   call find
   jne .number
@@ -553,6 +624,34 @@ interpret:
 .number:
   call number
   jne abort.notfnd
+  ret
+
+compile:
+  call mfind
+  jne .ccall
+  jmp qword [rsi]
+.ccall:
+  call find
+  jne .cnum
+  mov rdx, [rsi]
+  mov rdi, [xhere]
+  mov byte [rdi], $E8 ; call rel32
+  add rdi, 5
+  sub rdx, rdi
+  mov dword [rdi-4], edx
+  mov [xhere], rdi
+  ret
+.cnum:
+  call number
+  jne abort.notfnd
+  mov rdi, [xhere]
+  mov dword [rdi+$00], $F85B8D48 ; lea rbx, [rbx-8]
+  mov dword [rdi+$04], $038948   ; mov [rbx], rax
+  mov word  [rdi+$07], $B848     ; mov rax, 0
+  mov qword [rdi+$09], rax
+  add rdi, 17
+  mov [xhere], rdi
+  DROP
   ret
 
 quit:
@@ -614,13 +713,19 @@ start:
   RELOCDICT forth_names, forth_symbs, forth_space
   RELOCDICT macro_names, macro_symbs, macro_space
 
-  WINENTER $20
+  WINENTER $30
   mov ecx, -10
   call [GetStdHandle]
   mov [stdin], rax
   mov ecx, -11
   call [GetStdHandle]
   mov [stdout], rax
+
+  lea rcx, [code_space]
+  mov edx, 32*1024
+  mov r8d, $40          ; PAGE_EXECUTE_READWRITE
+  lea r9, [rsp+$28]
+  call [VirtualProtect]
   WINLEAVE
 
   lea rbx, [stack_space]
@@ -648,10 +753,14 @@ badstk:
 .str1: db '#ERR: Unbalanced data stack', 0
 .str2: db 'Error', 0
 
+align 4096
+code_space rb 32*1024
+
 section '.idata' data readable
 
 IMPORT \
 kernel32, <\
+  VirtualProtect,\
   SetConsoleTextAttribute,\
   GetConsoleScreenBufferInfo,\
   SetConsoleCursorPosition,\

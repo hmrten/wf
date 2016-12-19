@@ -1,0 +1,12 @@
+\ colon
+header : ] ] [
+macro header : ] header ;
+
+\ postpone
+: ` m' call, ;
+
+: dup 038948F85B8D48 7,x ;
+
+forth
+: dup  dup ;
+: drop asm 7 48 8B 03 48 8D 5B 08 ;

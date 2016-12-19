@@ -171,12 +171,14 @@ USERVAR '#tib' , tib_n, 0
 USERVAR '>in'  , tib_i, 0
 USERVAR 'base' , base, 16
 USERVAR 'xhere', xhere, code_space
+USERVAR 'here' , here, data_space
 
 ; == UNINITIALIZED DATA
 
 align 8
 stdin       dq ?
 stdout      dq ?
+conin       dq ?
 rsp0        dq ?
 
 align 4096
@@ -187,6 +189,7 @@ BUFSIZE equ 256
 tib         rb BUFSIZE
 tob         rb BUFSIZE
 nob         rb BUFSIZE
+sbuf        rb BUFSIZE
 
 align 16
 lname       rb 32
@@ -249,6 +252,9 @@ FORTHCODE 'accept', accept
   mov rax, rdi
   sub rax, rsi
 
+  cmp qword [conin], 0
+  jne .echo
+
   mov esi, eax
   mov rcx, [stdout]
   lea rdx, [.bi_dwSize]
@@ -260,12 +266,25 @@ FORTHCODE 'accept', accept
   call [SetConsoleCursorPosition]
   mov eax, esi
 
-.empty:
+.leave:
   WINLEAVE
-
-; NIP ( x y -- x )
-FORTHCODE 'nip', nip
   NIP
+  ret
+
+.empty:
+  mov rdi, [conin]
+  test rdi, rdi
+  je .leave
+  mov [stdin], rdi
+  xor eax, eax
+  mov [conin], rax
+  jmp .leave
+.echo:
+  WINLEAVE
+  push rax
+  call type
+  pop rax
+  DUP
   ret
 
 ; REFILL ( -- ZF )
@@ -279,9 +298,6 @@ FORTHCODE 'refill', refill
   mov dword [tib_n], eax
   mov dword [tib_i], 0
   test eax, eax
-
-; DROP ( x -- )
-FORTHCODE 'drop', drop
   DROP
   ret
 
@@ -315,7 +331,8 @@ FORTHCODE 'type', type
   mov [rsp+$20], r9
   call [WriteFile]
   WINLEAVE
-  jmp _2drop
+  DROP 2
+  ret
 
 ; H. ( x -- )
 FORTHCODE 'h.', hexdot
@@ -408,13 +425,52 @@ FORTHCODE 'color', color
   WINLEAVE
   pop rax
   ret
-
 FORTHCODE 'red', red
   mov edx, $0C ; FOREGROUND_RED | FOREGROUND_INTENSITY
   jmp color.set
 FORTHCODE 'silver', silver
   mov edx, $07
   jmp color.set
+
+; CHAR ( parse: next character -- ch )
+FORTHCODE 'char', char
+  call word_
+  cmp eax, 1
+  jne abort.notfnd
+  mov rsi, [rbx]
+  movzx eax, byte [rsi]
+  NIP
+  ret
+MACROCODE '[char]', mchar
+  call char
+  call lit_comma
+  ret
+
+; PARSE ( ch -- a u )
+FORTHCODE 'parse', parse
+  lea rsi, [tib]
+  mov edi, [tib_n]
+  mov ecx, [tib_i]
+  lea rbx, [rbx-8]
+  lea r8, [rsi+rcx]
+  movzx edx, al
+  mov [rbx], r8
+  xor eax, eax
+  cmp ecx, edi
+  jae .empty
+.scan:
+  cmp byte [rsi+rcx], dl
+  je .done
+  inc ecx
+  cmp ecx, edi
+  jb .scan
+.done:
+  lea rax, [rsi+rcx]
+  sub rax, r8
+  inc ecx
+  mov [tib_i], ecx
+.empty:
+  ret
 
 ; WORD ( -- a u )
 FORTHCODE 'word', word_
@@ -504,7 +560,8 @@ FORTHCODE 'number', number
   test eax, eax
   mov rax, r8
 .empty:
-  jmp nip
+  NIP
+  ret
 
 ; HEADER ( -- )
 FORTHCODE 'header', header
@@ -517,13 +574,20 @@ FORTHCODE 'header', header
   mov [rdi+16*1024], rcx
   add rdi, 16
   mov [rdx], rdi
-  jmp _2drop
+  DROP 2
+  ret
 
+FORTHCODE '7,x', _7comma_x
+  mov ecx, 7
+  jmp @f
 ; ,x ( x -- )
 FORTHCODE ',x', comma_x
+  mov ecx, 1
+@@:
   mov rdi, [xhere]
-  mov byte [rdi], al
-  inc qword [xhere]
+  mov [rdi], rax
+  add rdi, rcx
+  mov [xhere], rdi
   DROP
   ret
 
@@ -541,17 +605,105 @@ FORTHCODE 'macro', macro_
 
 ; ] ( switch to compiler )
 FORTHCODE ']', rbrack
-  mov qword [action], compile
+  lea rdx, [compile]
+  mov qword [action], rdx
+  ret
+
+FORTHCODE 'bye', bye
+  WINENTER $20
+  xor ecx, ecx
+  jmp [ExitProcess]
+
+FORTHCODE '\', backslash
+MACROCODE '\', mbackslash
+  DUP
+  mov al, $0A
+  call parse
+  DROP 2
+  ret
+
+; F' ( -- xt )
+FORTHCODE "f'", ftick
+  call word_
+  call find
+  jne mtick.err
+.shared:
+  DUP
+  mov rax, [rsi]
+  ret
+
+; M' ( -- xt )
+FORTHCODE "m'", mtick
+  call word_
+  call mfind
+  je ftick.shared
+.err:
+  DROP 2
+  jmp abort.notfnd
+
+; C, ( c -- )
+FORTHCODE 'c,', ccomma
+  mov rdi, [xhere]
+  mov [rdi], al
+  inc qword [xhere]
+  ret
+
+; ALLOT ( n -- )
+FORTHCODE 'allot', allot
+  add qword [here], rax
+  DROP
+  ret
+
+FORTHCODE 'z"', zquote_f
+  DUP
+  mov al, '"'
+  call parse
+  lea rdi, [sbuf]
+  push rdi
+  mov rsi, [rbx]
+  mov ecx, eax
+  rep movsb
+  pop rax
+  NIP
+  ret
+
+; DLL-LOAD ( zstr -- )
+FORTHCODE 'dll-load', dll_load
+  WINENTER $20
+  mov rcx, rax
+  call [LoadLibraryA]
+  WINLEAVE
+  push rax
+  call header
+  pop rax
+  call lit_comma
+  jmp exit
+
+; DLL-CALL ( args.. dll "proc" -- )
+FORTHCODE 'dll-call', dll_call
+  WINENTER $20
+  mov rcx, [rbx]
+  mov rdx, rax
+  call [GetProcAddress]
+  mov r9,  [rbx+$08]
+  mov r8,  [rbx+$10]
+  mov rdx, [rbx+$18]
+  mov rcx, [rbx+$20]
+  call rax
+  WINLEAVE
+  DROP 6
   ret
 
 ; [ ( switch to interpreter )
 MACROCODE '[', lbrack
-  mov qword [action], interpret
+  lea rdx, [interpret]
+  mov qword [action], rdx
   ret
 
 ; ; ( end current definition )
 MACROCODE ';', semi
   call lbrack
+MACROCODE ';;', exit
   mov rdi, [xhere]
   mov byte [rdi], $C3
   inc qword [xhere]
@@ -574,6 +726,27 @@ MACROCODE 'asm', asm
   jnz .loop
   pop r12
 .docopy:
+  ret
+
+MACROCODE 'z"', zquote
+  DUP
+  mov al, '"'
+  call parse
+  mov rdi, [xhere]
+  lea rdx, [.pushstr]
+  add rdi, 5
+  sub rdx, rdi
+  mov byte  [rdi-5], $E8
+  mov dword [rdi-4], edx
+  mov ecx, eax
+  mov rsi, [rbx]
+  rep movsb
+  mov [xhere], rdi
+  DROP 2
+  ret
+.pushstr:
+  DUP
+  pop rax
   ret
 
 ; [M]FIND ( a u -- a u | -- )
@@ -603,47 +776,59 @@ find:
   ret
 .match:
   lea rsi, [rsi+16*1024]
-
-; 2DROP ( x y -- )
-FORTHCODE '2drop', _2drop
   DROP 2
   ret
 
 interpret:
   call find
-  jne .number
+  jne .num
   mov rdi, [rsi]
   lea rdx, [data_end]
   cmp rdi, rdx
-  jb .uservar
+  jb .var
   jmp rdi
-.uservar:
+.var:
   DUP
   mov rax, [rdi]
   ret
-.number:
+.num:
   call number
   jne abort.notfnd
   ret
 
 compile:
   call mfind
-  jne .ccall
+  jne @f
   jmp qword [rsi]
-.ccall:
+@@:
   call find
-  jne .cnum
-  mov rdx, [rsi]
+  jne lit_comma0
+  DUP
+  mov rax, [rsi]
+
+; CALL, ( xt -- )
+FORTHCODE 'call,', call_comma
   mov rdi, [xhere]
   mov byte [rdi], $E8 ; call rel32
-  add rdi, 5
-  sub rdx, rdi
-  mov dword [rdi-4], edx
+  inc rdi
   mov [xhere], rdi
+  jmp @f
+; REL32, ( a -- )
+FORTHCODE 'rel32,', rel32_comma
+  mov rdi, [xhere]
+@@:
+  add rdi, 4
+  sub rax, rdi
+  mov dword [rdi-4], eax
+  mov [xhere], rdi
+  DROP
   ret
-.cnum:
+
+lit_comma0:
   call number
   jne abort.notfnd
+; LIT, ( x -- )
+FORTHCODE 'lit,', lit_comma
   mov rdi, [xhere]
   mov dword [rdi+$00], $F85B8D48 ; lea rbx, [rbx-8]
   mov dword [rdi+$04], $038948   ; mov [rbx], rax
@@ -713,10 +898,25 @@ start:
   RELOCDICT forth_names, forth_symbs, forth_space
   RELOCDICT macro_names, macro_symbs, macro_space
 
-  WINENTER $30
+  WINENTER $40
   mov ecx, -10
   call [GetStdHandle]
   mov [stdin], rax
+
+  mov rcx, rax
+  call [GetFileType]
+  cmp al, 2
+  je @f
+  lea rcx, [conin_s]
+  mov edx, $80000000     ; GENERIC_READ
+  mov r8d, 1             ; FILE_SHARE_READ
+  xor r9, r9
+  mov dword [rsp+$20], 3 ; OPEN_EXISTING
+  mov dword [rsp+$28], r9d
+  mov qword [rsp+$30], r9
+  call [CreateFileA]
+  mov [conin], rax
+@@:
   mov ecx, -11
   call [GetStdHandle]
   mov [stdout], rax
@@ -733,44 +933,28 @@ start:
   mov [rsp0], rsp
   jmp quit
 
-bye0:
-  lea rdi, [stack_space]
-  cmp rbx, rdi
-  jne badstk
-bye:
-  WINENTER $20
-@@:
-  xor ecx, ecx
-  jmp [ExitProcess]
-badstk:
-  WINENTER $20
-  xor ecx, ecx
-  lea rdx, [.str1]
-  lea r8d, [.str2]
-  xor r9, r9
-  call [MessageBoxA]
-  jmp @b
-.str1: db '#ERR: Unbalanced data stack', 0
-.str2: db 'Error', 0
-
 align 4096
 code_space rb 32*1024
 
-section '.idata' data readable
+section '.rdata' data readable
 
 IMPORT \
 kernel32, <\
+  GetProcAddress,\
+  LoadLibraryA,\
   VirtualProtect,\
   SetConsoleTextAttribute,\
   GetConsoleScreenBufferInfo,\
   SetConsoleCursorPosition,\
   SetFilePointer,\
+  CreateFileA,\
   ReadFile,\
   WriteFile,\
   GetStdHandle,\
-  ExitProcess>,\
-user32, <\
-  MessageBoxA>
+  GetFileType,\
+  ExitProcess>
+
+conin_s:   db 'CONIN$', 0
 
 align 16
 forth_names:

@@ -162,6 +162,7 @@ digitmap   dq $03FF000000000000, $07FFFFFE07FFFFFE
 
 align 8
 action     dq interpret
+sbuf_i     dd 0
 
 user_vars:
 USERVAR 'fd'   , fd, forth_space+forth_names.size
@@ -189,7 +190,7 @@ BUFSIZE equ 256
 tib         rb BUFSIZE
 tob         rb BUFSIZE
 nob         rb BUFSIZE
-sbuf        rb BUFSIZE
+sbuf        rb 8*BUFSIZE
 
 align 16
 lname       rb 32
@@ -205,7 +206,7 @@ stack_space = $
 
 section '.text' code executable readable
 
-; ACCEPT ( a u1 -- u2 )
+; ACCEPT ( adr u1 -- u2 )
 FORTHCODE 'accept', accept
   mov rdi, [rbx]
   WINENTER $50
@@ -312,7 +313,7 @@ FORTHCODE 'space', space
   DUP
   mov al, ' '
 
-; EMIT ( ch -- )
+; EMIT ( c -- )
 FORTHCODE 'emit', emit
   mov dl, al
 .0:
@@ -321,7 +322,7 @@ FORTHCODE 'emit', emit
   DUP
   mov eax, 1
 
-; TYPE ( a u -- )
+; TYPE ( adr u -- )
 FORTHCODE 'type', type
   WINENTER $30
   mov rcx, [stdout]
@@ -334,7 +335,7 @@ FORTHCODE 'type', type
   DROP 2
   ret
 
-; H. ( x -- )
+; H. ( n -- )
 FORTHCODE 'h.', hexdot
   CHECKSTK
   bswap rax
@@ -354,7 +355,7 @@ FORTHCODE 'h.', hexdot
   mov eax, 17
   jmp type
 
-; . ( x -- )
+; . ( n -- )
 FORTHCODE '.', dot
   CHECKSTK
   lea rsi, [basedigits]
@@ -413,7 +414,7 @@ FORTHCODE '.depth', dot_depth
   dec rax
   jmp dot
 
-; COLOR ( x -- )
+; COLOR ( u -- )
 FORTHCODE 'color', color
   mov edx, eax
   DROP
@@ -432,7 +433,7 @@ FORTHCODE 'silver', silver
   mov edx, $07
   jmp color.set
 
-; CHAR ( parse: next character -- ch )
+; CHAR ( parse: next character -- c )
 FORTHCODE 'char', char
   call word_
   cmp eax, 1
@@ -443,10 +444,9 @@ FORTHCODE 'char', char
   ret
 MACROCODE '[char]', mchar
   call char
-  call lit_comma
-  ret
+  jmp lit
 
-; PARSE ( ch -- a u )
+; PARSE ( c -- adr u )
 FORTHCODE 'parse', parse
   lea rsi, [tib]
   mov edi, [tib_n]
@@ -472,7 +472,7 @@ FORTHCODE 'parse', parse
 .empty:
   ret
 
-; WORD ( -- a u )
+; WORD ( -- adr u )
 FORTHCODE 'word', word_
   lea rsi, [tib]
   mov edx, [tib_n]
@@ -519,7 +519,7 @@ FORTHCODE 'word', word_
 .empty:
   ret
 
-; NUMBER ( a u -- x )
+; NUMBER ( adr u -- n )
 ; ZF=1 ok, entire string converted, ZF=0 not a number
 FORTHCODE 'number', number
   test rax, rax
@@ -577,12 +577,17 @@ FORTHCODE 'header', header
   DROP 2
   ret
 
-FORTHCODE '7,x', _7comma_x
-  mov ecx, 7
-  jmp @f
-; ,x ( x -- )
-FORTHCODE ',x', comma_x
-  mov ecx, 1
+; allot ( n -- )
+; allocate n bytes of data space if n > 0, otherwise deallocate n bytes
+FORTHCODE 'allot', allot
+  add qword [here], rax
+  DROP
+  ret
+
+; , ( n -- )
+; store and allocate space for a number in data space
+FORTHCODE ',', comma
+  mov ecx, 8
 @@:
   mov rdi, [xhere]
   mov [rdi], rax
@@ -590,6 +595,74 @@ FORTHCODE ',x', comma_x
   mov [xhere], rdi
   DROP
   ret
+FORTHCODE 'l,', lcomma
+  mov ecx, 4
+  jmp @b
+FORTHCODE 'w,', wcomma
+  mov ecx, 2
+  jmp @b
+FORTHCODE 'b,', bcomma
+  mov ecx, 1
+  jmp @b
+
+; ,x ( n -- )
+; store and allocate space for a number in code space
+FORTHCODE ',x', comma_x
+  mov ecx, 8
+@@:
+  mov rdi, [xhere]
+  mov [rdi], rax
+  add rdi, rcx
+  mov [xhere], rdi
+.ret:
+  DROP
+  ret
+FORTHCODE 'l,x', lcomma_x
+  mov ecx, 4
+  jmp @b
+FORTHCODE 'w,x', wcomma_x
+  mov ecx, 2
+  jmp @b
+FORTHCODE 'b,x', bcomma_x
+  mov ecx, 1
+  jmp @b
+
+; -q,x ( n -- )
+; patch last qword/dword/byte of code
+FORTHCODE '-q,x', qpatch
+  mov rdi, [xhere]
+  mov [rdi-8], rax
+  jmp comma_x.ret
+FORTHCODE '-l,x', lpatch
+  mov rdi, [xhere]
+  mov [rdi-4], eax
+  jmp comma_x.ret
+FORTHCODE '-b,x', bpatch
+  mov rdi, [xhere]
+  mov [rdi-1], al
+  jmp comma_x.ret
+
+; #,x ( n -- )
+; try to compile a signed imm8 or imm32 value
+FORTHCODE '#,x', numcomma_x
+  mov rdi, [xhere]
+  movsx rdx, al
+  cmp rdx, rax
+  jne .l
+  mov byte [rdi], al
+  inc rdi
+.imm32:
+.ret:
+  mov [xhere], rdi
+  DROP
+  ret
+.l:
+  movsxd rdx, eax
+  cmp rdx, rax
+  jne abort.imm32
+  mov dword [rdi], eax
+  add rdi, 4
+  jmp .ret
 
 ; FORTH ( switch to compiling into forth dict )
 FORTHCODE 'forth', forth
@@ -622,43 +695,37 @@ MACROCODE '\', mbackslash
   DROP 2
   ret
 
-; F' ( -- xt )
-FORTHCODE "f'", ftick
+; ' ( -- xt )
+; parse word and lookup its xt in forth dict
+FORTHCODE "'", tick
   call word_
   call find
   jne mtick.err
-.shared:
+.ret:
   DUP
   mov rax, [rsi]
   ret
-
-; M' ( -- xt )
-FORTHCODE "m'", mtick
+; '' ( -- xt )
+; parse word and lookup its xt in macro dict
+FORTHCODE "''", mtick
   call word_
   call mfind
-  je ftick.shared
+  je tick.ret
 .err:
   DROP 2
   jmp abort.notfnd
 
-; C, ( c -- )
-FORTHCODE 'c,', ccomma
-  mov rdi, [xhere]
-  mov [rdi], al
-  inc qword [xhere]
-  ret
-
-; ALLOT ( n -- )
-FORTHCODE 'allot', allot
-  add qword [here], rax
-  DROP
-  ret
-
-FORTHCODE 'z"', zquote_f
+; z" ( -- adr )
+; parse a string delimited by " and push its address on the stack
+FORTHCODE 'z"', zquote
   DUP
   mov al, '"'
   call parse
-  lea rdi, [sbuf]
+  mov edx, [sbuf_i]
+  inc dword [sbuf_i]
+  and edx, 7
+  shl edx, 8
+  lea rdi, [sbuf+rdx]
   push rdi
   mov rsi, [rbx]
   mov ecx, eax
@@ -676,8 +743,14 @@ FORTHCODE 'dll-load', dll_load
   push rax
   call header
   pop rax
-  call lit_comma
+  call lit
   jmp exit
+
+; DLL-PROC ( mod cnt zstr -- )
+FORTHCODE 'dll-proc', dll_proc
+  call header
+  mov rdi, [xhere]
+  ret
 
 ; DLL-CALL ( args.. dll "proc" -- )
 FORTHCODE 'dll-call', dll_call
@@ -709,6 +782,9 @@ MACROCODE ';;', exit
   inc qword [xhere]
   ret
 
+MACROCODE 'then', then
+  ret
+
 ; ASM ( parse: "n" n*i opcodes and assemble inline -- )
 MACROCODE 'asm', asm
   call word_
@@ -721,14 +797,17 @@ MACROCODE 'asm', asm
   call word_
   call number
   jne abort.notfnd
-  call comma_x
+  call bcomma_x
   dec r12
   jnz .loop
   pop r12
 .docopy:
   ret
 
-MACROCODE 'z"', zquote
+; z" ( -- adr )
+; parse a string delimited by " and compile code to push its address
+; on the data stack
+MACROCODE 'z"', mzquote
   DUP
   mov al, '"'
   call parse
@@ -738,6 +817,8 @@ MACROCODE 'z"', zquote
   sub rdx, rdi
   mov byte  [rdi-5], $E8
   mov dword [rdi-4], edx
+  mov byte [rdi], al
+  inc rdi
   mov ecx, eax
   mov rsi, [rbx]
   rep movsb
@@ -745,11 +826,15 @@ MACROCODE 'z"', zquote
   DROP 2
   ret
 .pushstr:
+  pop rdi
+  movzx edx, byte [rdi]
+  lea rdx, [rdi+rdx+1]
+  push rdx
   DUP
-  pop rax
+  lea rax, [rdi+1]
   ret
 
-; [M]FIND ( a u -- a u | -- )
+; [m]find ( adr u -- adr u | -- )
 ; ZF=1 found, ZF=0 not found, symb offset in rsi
 ; if found, consumes string, otherwise leaves it
 mfind:
@@ -802,18 +887,18 @@ compile:
   jmp qword [rsi]
 @@:
   call find
-  jne lit_comma0
+  jne lit0
   DUP
   mov rax, [rsi]
 
-; CALL, ( xt -- )
+; call, ( xt -- )
 FORTHCODE 'call,', call_comma
   mov rdi, [xhere]
   mov byte [rdi], $E8 ; call rel32
   inc rdi
   mov [xhere], rdi
   jmp @f
-; REL32, ( a -- )
+; rel32, ( adr -- )
 FORTHCODE 'rel32,', rel32_comma
   mov rdi, [xhere]
 @@:
@@ -824,19 +909,25 @@ FORTHCODE 'rel32,', rel32_comma
   DROP
   ret
 
-lit_comma0:
+lit0:
   call number
   jne abort.notfnd
-; LIT, ( x -- )
-FORTHCODE 'lit,', lit_comma
+; lit ( n -- )
+MACROCODE 'lit', lit
+  call mdup
+  mov word  [rdi+$00], $B848     ; mov rax, 0
+  mov qword [rdi+$02], rax
+  add rdi, 10
+  mov [xhere], rdi
+  DROP
+  ret
+
+MACROCODE 'dup', mdup
   mov rdi, [xhere]
   mov dword [rdi+$00], $F85B8D48 ; lea rbx, [rbx-8]
   mov dword [rdi+$04], $038948   ; mov [rbx], rax
-  mov word  [rdi+$07], $B848     ; mov rax, 0
-  mov qword [rdi+$09], rax
-  add rdi, 17
+  add rdi, 7
   mov [xhere], rdi
-  DROP
   ret
 
 quit:
@@ -884,8 +975,20 @@ abort:
   add eax, ecx
   rep movsb
   pop qword [rbx]
+  jmp .print
+; ( n -- )
+.imm32:
+  call red
+  call dot
+  lea rbx, [rbx-16]
+  mov [rbx+8], rax
+  lea rdx, [strings.abort.imm32]
+  mov [rbx], rdx
+  mov eax, strings.abort.imm32.size
+  jmp @f
 .print:
   call red
+@@:
   call type
   call cr
   call silver
@@ -907,7 +1010,7 @@ start:
   call [GetFileType]
   cmp al, 2
   je @f
-  lea rcx, [conin_s]
+  lea rcx, [strings.conin]
   mov edx, $80000000     ; GENERIC_READ
   mov r8d, 1             ; FILE_SHARE_READ
   xor r9, r9
@@ -954,7 +1057,15 @@ kernel32, <\
   GetFileType,\
   ExitProcess>
 
-conin_s:   db 'CONIN$', 0
+macro STRING name, s {
+  .#name: db s
+  .#name#.size = $ - .#name
+}
+
+
+strings:
+  STRING conin, <'CONIN$', 0>
+  STRING abort.imm32, 'cannot be encoded as an imm32 operand'
 
 align 16
 forth_names:

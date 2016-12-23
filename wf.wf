@@ -3,10 +3,14 @@ header : ] ] [
 macro header : ] header ;
 
 \ postpone
-: ` m' call, ;
+: ` '' call, ;
 
-: dup 038948F85B8D48 7,x ;
+: b#+ C08348 l,x -b,x ;
 
 forth
 : dup  dup ;
 : drop asm 7 48 8B 03 48 8D 5B 08 ;
+
+: + asm 7 48 03 03 48 8D 5B 08 ;
+
+: 1+ [ 1 ] b#+ ;

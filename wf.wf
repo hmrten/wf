@@ -6,6 +6,7 @@ macro header : ] header ;
 : ` '' call, ;
 
 : b#+ C08348 l,x -b,x ;
+: l#+ 0548 w,x -l,x ;
 
 forth
 : dup  dup ;

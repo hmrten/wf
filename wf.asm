@@ -432,6 +432,9 @@ FORTHCODE 'red', red
 FORTHCODE 'silver', silver
   mov edx, $07
   jmp color.set
+FORTHCODE 'white', white
+  mov edx, $0F
+  jmp color.set
 
 ; CHAR ( parse: next character -- c )
 FORTHCODE 'char', char
@@ -834,6 +837,64 @@ MACROCODE 'z"', mzquote
   lea rax, [rdi+1]
   ret
 
+MACROCODE 'for', for
+; 0000: 41 54              push        r12
+; 0002: 49 89 C4           mov         r12,rax
+; 0005: 48 8B 03           mov         rax,qword ptr [rbx]
+; 0008: 48 8D 5B 08        lea         rbx,[rbx+8]
+  DUP
+  mov rax, [xhere]
+  mov rdx, $038B48C489495441
+  mov ecx, $085B8D48
+  mov [rax+0], rdx
+  mov [rax+8], ecx
+  add rax, 12
+  mov [xhere], rax
+  ret
+
+MACROCODE 'next', next
+; 0000: 49 FF CC           dec         r12
+; 0003: 75 00              jne         00
+; 0003: 0F 85 00 00 00 00  jne         00
+; 0005: 41 5C              pop         r12
+  mov rdi, [xhere]
+  mov dword [rdi+$00], $CCFF49
+  sub rax, 5
+  sub rax, rdi
+  add rdi, 3
+  cmp eax, -128
+  jl .rel32
+  mov byte  [rdi+$00], $75
+  mov byte  [rdi+$01], al
+  add rdi, 2
+  jmp .rest
+.rel32:
+  sub rax, 4
+  mov  word [rdi+$00], $850F
+  mov dword [rdi+$02], eax
+  add rdi, 6
+.rest:
+  mov word  [rdi+$00], $5C41
+  add rdi, 2
+  mov [xhere], rdi
+  DROP
+  ret
+
+MACROCODE 'i', i
+  call mdup
+  mov dword [rdi], $E0894C
+  add rdi, 3
+  mov [xhere], rdi
+  ret
+
+MACROCODE 'dup', mdup
+  mov rdi, [xhere]
+  mov dword [rdi+$00], $F85B8D48 ; lea rbx, [rbx-8]
+  mov dword [rdi+$04], $038948   ; mov [rbx], rax
+  add rdi, 7
+  mov [xhere], rdi
+  ret
+
 ; [m]find ( adr u -- adr u | -- )
 ; ZF=1 found, ZF=0 not found, symb offset in rsi
 ; if found, consumes string, otherwise leaves it
@@ -922,14 +983,6 @@ MACROCODE 'lit', lit
   DROP
   ret
 
-MACROCODE 'dup', mdup
-  mov rdi, [xhere]
-  mov dword [rdi+$00], $F85B8D48 ; lea rbx, [rbx-8]
-  mov dword [rdi+$04], $038948   ; mov [rbx], rax
-  add rdi, 7
-  mov [xhere], rdi
-  ret
-
 quit:
   call refill
   je .prompt0
@@ -953,6 +1006,7 @@ quit:
   call cr
   jmp quit
 
+; TODO: clean this up
 abort:
 .uf:
   lea rbx, [rbx-16]
@@ -965,11 +1019,13 @@ abort:
 .notfnd:
   lea rbx, [rbx-16]
   mov [rbx+8], rax
+  xor eax, eax
   lea rdi, [tob]
   push rdi
-  mov word [rdi], '? '
-  add rdi, 2
-  mov eax, 2
+  lea rsi, [strings.abort.error]
+  mov ecx, strings.abort.error.size + strings.abort.notfnd.size
+  add eax, ecx
+  rep movsb
   lea rsi, [lname]
   movzx ecx, byte [lname_n]
   add eax, ecx
@@ -978,16 +1034,21 @@ abort:
   jmp .print
 ; ( n -- )
 .imm32:
-  call red
+  lea rbx, [rbx-40] ; allocate 5 args
+  mov [rbx+32], rax
+  lea rdx, [strings.abort.error]
+  mov [rbx], rdx
+  mov eax, strings.abort.error.size
+  call white
+  call type
+  mov rax, [rbx+16]
   call dot
-  lea rbx, [rbx-16]
-  mov [rbx+8], rax
   lea rdx, [strings.abort.imm32]
   mov [rbx], rdx
   mov eax, strings.abort.imm32.size
   jmp @f
 .print:
-  call red
+  call white
 @@:
   call type
   call cr
@@ -1065,6 +1126,8 @@ macro STRING name, s {
 
 strings:
   STRING conin, <'CONIN$', 0>
+  STRING abort.error, 'ERROR: '
+  STRING abort.notfnd, 'undefined word: '
   STRING abort.imm32, 'cannot be encoded as an imm32 operand'
 
 align 16

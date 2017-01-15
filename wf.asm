@@ -654,7 +654,6 @@ FORTHCODE '#,x', numcomma_x
   jne .l
   mov byte [rdi], al
   inc rdi
-.imm32:
 .ret:
   mov [xhere], rdi
   DROP
@@ -733,6 +732,8 @@ FORTHCODE 'z"', zquote
   mov rsi, [rbx]
   mov ecx, eax
   rep movsb
+  xor eax, eax
+  stosb
   pop rax
   NIP
   ret
@@ -820,11 +821,13 @@ MACROCODE 'z"', mzquote
   sub rdx, rdi
   mov byte  [rdi-5], $E8
   mov dword [rdi-4], edx
-  mov byte [rdi], al
-  inc rdi
   mov ecx, eax
+  inc al
+  stosb
   mov rsi, [rbx]
   rep movsb
+  xor eax, eax
+  stosb
   mov [xhere], rdi
   DROP 2
   ret

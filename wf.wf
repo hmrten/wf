@@ -1,17 +1,19 @@
-\ colon
 header : ] ] [
 macro header : ] header ;
 
-\ postpone
 : ` '' call, ;
 
-: b#+ C08348 l,x -b,x ;
-: l#+ 0548 w,x -l,x ;
+: drop 085B8D48038B48 7 ,, ;
+: for C489495441 5 ,, ` drop ` xhere ;
+
+: asm word number for word number 1 ,, next ;
 
 forth
-: dup  dup ;
-: drop asm 7 48 8B 03 48 8D 5B 08 ;
+: dup dup ; : drop drop ;
 
-: + asm 7 48 03 03 48 8D 5B 08 ;
+\ : + asm 7 48 03 03 48 8D 5B 08 ;
 
-: 1+ [ 1 ] b#+ ;
+: #1+ header C08348 3 ,, 1 ,, ` ;; ;
+
+1 #1+ 1+
+2 #1+ 2+

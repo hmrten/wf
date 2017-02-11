@@ -206,8 +206,7 @@ stack_space = $
 
 section '.text' code executable readable
 
-; ACCEPT ( adr u1 -- u2 )
-FORTHCODE 'accept', accept
+FORTHCODE 'accept', accept ; ( adr u1 -- u2 )
   mov rdi, [rbx]
   WINENTER $50
   virtual at rsp+$28
@@ -288,8 +287,7 @@ FORTHCODE 'accept', accept
   DUP
   ret
 
-; REFILL ( -- ZF )
-FORTHCODE 'refill', refill
+FORTHCODE 'refill', refill ; ( -- ZF )
   lea rbx, [rbx-16]
   mov [rbx+8], rax
   lea rdx, [tib]
@@ -302,19 +300,16 @@ FORTHCODE 'refill', refill
   DROP
   ret
 
-; CR ( -- )
-FORTHCODE 'cr', cr
+FORTHCODE 'cr', cr ; ( -- )
   DUP
   mov dl, $0A
   jmp emit.0
 
-; SPACE ( -- )
-FORTHCODE 'space', space
+FORTHCODE 'space', space ; ( -- )
   DUP
   mov al, ' '
 
-; EMIT ( c -- )
-FORTHCODE 'emit', emit
+FORTHCODE 'emit', emit ; ( c -- )
   mov dl, al
 .0:
   lea rax, [tob]
@@ -322,8 +317,7 @@ FORTHCODE 'emit', emit
   DUP
   mov eax, 1
 
-; TYPE ( adr u -- )
-FORTHCODE 'type', type
+FORTHCODE 'type', type ; ( adr u -- )
   WINENTER $30
   mov rcx, [stdout]
   mov rdx, [rbx]
@@ -335,8 +329,7 @@ FORTHCODE 'type', type
   DROP 2
   ret
 
-; H. ( n -- )
-FORTHCODE 'h.', hexdot
+FORTHCODE 'h.', hexdot ; ( x -- )
   CHECKSTK
   bswap rax
   mov rcx, $F0F0F0F0F0F0F0F0
@@ -355,8 +348,7 @@ FORTHCODE 'h.', hexdot
   mov eax, 17
   jmp type
 
-; . ( n -- )
-FORTHCODE '.', dot
+FORTHCODE '.', dot ; ( x -- )
   CHECKSTK
   lea rsi, [basedigits]
   lea rdi, [nob+BUFSIZE-2]
@@ -386,8 +378,7 @@ FORTHCODE '.', dot
   sub rax, rdi
   jmp type
 
-; .S ( -- )
-FORTHCODE '.s', dot_s
+FORTHCODE '.s', dot_s ; ( -- )
   DUP
   mov rsi, rbx
   lea rdi, [stack_space-8]
@@ -405,8 +396,7 @@ FORTHCODE '.s', dot_s
   DROP
   ret
 
-; .DEPTH ( -- )
-FORTHCODE '.depth', dot_depth
+FORTHCODE '.depth', dot_depth ; ( -- )
   DUP
   lea rax, [stack_space]
   sub rax, rbx
@@ -414,8 +404,7 @@ FORTHCODE '.depth', dot_depth
   dec rax
   jmp dot
 
-; COLOR ( u -- )
-FORTHCODE 'color', color
+FORTHCODE 'color', color ; ( x -- )
   mov edx, eax
   DROP
 .set:
@@ -436,8 +425,7 @@ FORTHCODE 'white', white
   mov edx, $0F
   jmp color.set
 
-; CHAR ( parse: next character -- c )
-FORTHCODE 'char', char
+FORTHCODE 'char', char ; ( parse: next character -- c )
   call word_
   cmp eax, 1
   jne abort.notfnd
@@ -447,10 +435,9 @@ FORTHCODE 'char', char
   ret
 MACROCODE '[char]', mchar
   call char
-  jmp lit
+  jmp lit_comma
 
-; PARSE ( c -- adr u )
-FORTHCODE 'parse', parse
+FORTHCODE 'parse', parse ; ( c -- adr u )
   lea rsi, [tib]
   mov edi, [tib_n]
   mov ecx, [tib_i]
@@ -475,8 +462,7 @@ FORTHCODE 'parse', parse
 .empty:
   ret
 
-; WORD ( -- adr u )
-FORTHCODE 'word', word_
+FORTHCODE 'word', word_ ; ( -- adr u )
   lea rsi, [tib]
   mov edx, [tib_n]
   mov ecx, [tib_i]
@@ -522,9 +508,8 @@ FORTHCODE 'word', word_
 .empty:
   ret
 
-; NUMBER ( adr u -- n )
 ; ZF=1 ok, entire string converted, ZF=0 not a number
-FORTHCODE 'number', number
+FORTHCODE 'number', number ; ( adr u -- x )
   test rax, rax
   jz .empty
   mov rsi, [rbx]
@@ -566,8 +551,7 @@ FORTHCODE 'number', number
   NIP
   ret
 
-; HEADER ( -- )
-FORTHCODE 'header', header
+FORTHCODE 'header', header ; ( -- )
   call word_
   movdqa xmm0, xword [lname]
   mov rdx, [hd]
@@ -580,22 +564,25 @@ FORTHCODE 'header', header
   DROP 2
   ret
 
-; allot ( n -- )
-; allocate n bytes of data space if n > 0, otherwise deallocate n bytes
-FORTHCODE 'allot', allot
+; allocate n bytes of data space if n > 0, otherwise deallocate
+FORTHCODE 'allot', allot ; ( n -- )
   add qword [here], rax
+@@:
   DROP
   ret
+; allocate n bytes of code space if n > 0, otherwise deallocate
+FORTHCODE 'xallot', xallot ; ( n -- )
+  add qword [xhere], rax
+  jmp @b
 
-; , ( n -- )
 ; store and allocate space for a number in data space
-FORTHCODE ',', comma
+FORTHCODE ',', comma ; ( x -- )
   mov ecx, 8
 @@:
-  mov rdi, [xhere]
+  mov rdi, [here]
   mov [rdi], rax
   add rdi, rcx
-  mov [xhere], rdi
+  mov [here], rdi
   DROP
   ret
 FORTHCODE 'l,', lcomma
@@ -604,92 +591,66 @@ FORTHCODE 'l,', lcomma
 FORTHCODE 'w,', wcomma
   mov ecx, 2
   jmp @b
-FORTHCODE 'b,', bcomma
+FORTHCODE 'c,', ccomma
   mov ecx, 1
   jmp @b
 
-; ,x ( n -- )
-; store and allocate space for a number in code space
-FORTHCODE ',x', comma_x
-  mov ecx, 8
-@@:
+; store x in code space and advance compiler pointer by n
+FORTHCODE ',,', xcomma ; ( x n -- )
   mov rdi, [xhere]
-  mov [rdi], rax
-  add rdi, rcx
+  mov rdx, [rbx]
+  mov [rdi], rdx
+  add rdi, rax
   mov [xhere], rdi
-.ret:
-  DROP
+  DROP 2
   ret
-FORTHCODE 'l,x', lcomma_x
-  mov ecx, 4
-  jmp @b
-FORTHCODE 'w,x', wcomma_x
-  mov ecx, 2
-  jmp @b
-FORTHCODE 'b,x', bcomma_x
-  mov ecx, 1
-  jmp @b
 
-; -q,x ( n -- )
-; patch last qword/dword/byte of code
-FORTHCODE '-q,x', qpatch
-  mov rdi, [xhere]
-  mov [rdi-8], rax
-  jmp comma_x.ret
-FORTHCODE '-l,x', lpatch
-  mov rdi, [xhere]
-  mov [rdi-4], eax
-  jmp comma_x.ret
-FORTHCODE '-b,x', bpatch
-  mov rdi, [xhere]
-  mov [rdi-1], al
-  jmp comma_x.ret
-
-; #,x ( n -- )
 ; try to compile a signed imm8 or imm32 value
-FORTHCODE '#,x', numcomma_x
+FORTHCODE '#,,', numxcomma ; ( x -- )
   mov rdi, [xhere]
   movsx rdx, al
   cmp rdx, rax
-  jne .l
+  jne .32
   mov byte [rdi], al
   inc rdi
-.ret:
+.done:
   mov [xhere], rdi
   DROP
   ret
-.l:
+.32:
   movsxd rdx, eax
   cmp rdx, rax
   jne abort.imm32
   mov dword [rdi], eax
   add rdi, 4
-  jmp .ret
+  jmp .done
 
-; FORTH ( switch to compiling into forth dict )
-FORTHCODE 'forth', forth
+; switch to compiling into forth dict
+FORTHCODE 'forth', forth ; ( -- )
   lea rdi, [fd]
 @@:
   mov [hd], rdi
   ret
 
-; MACRO ( switch to compiling into macro dict )
-FORTHCODE 'macro', macro_
+; switch to compiling into macro dict
+FORTHCODE 'macro', macro_ ; ( -- )
   lea rdi, [md]
   jmp @b
 
-; ] ( switch to compiler )
-FORTHCODE ']', rbrack
+; switch to compiler
+FORTHCODE ']', rbrack ; ( -- )
   lea rdx, [compile]
   mov qword [action], rdx
   ret
 
-FORTHCODE 'bye', bye
+; exit process
+FORTHCODE 'bye', bye ; ( -- )
   WINENTER $20
   xor ecx, ecx
   jmp [ExitProcess]
 
-FORTHCODE '\', backslash
+; comment, parse and drop rest of line
+FORTHCODE '\', backslash ; ( -- )
 MACROCODE '\', mbackslash
   DUP
   mov al, $0A
@@ -697,9 +658,8 @@ MACROCODE '\', mbackslash
   DROP 2
   ret
 
-; ' ( -- xt )
 ; parse word and lookup its xt in forth dict
-FORTHCODE "'", tick
+FORTHCODE "'", tick ; ( -- xt )
   call word_
   call find
   jne mtick.err
@@ -707,9 +667,9 @@ FORTHCODE "'", tick
   DUP
   mov rax, [rsi]
   ret
-; '' ( -- xt )
+
 ; parse word and lookup its xt in macro dict
-FORTHCODE "''", mtick
+FORTHCODE "''", mtick ; ( -- xt )
   call word_
   call mfind
   je tick.ret
@@ -717,9 +677,8 @@ FORTHCODE "''", mtick
   DROP 2
   jmp abort.notfnd
 
-; z" ( -- adr )
 ; parse a string delimited by " and push its address on the stack
-FORTHCODE 'z"', zquote
+FORTHCODE 'z"', zquote ; ( -- adr )
   DUP
   mov al, '"'
   call parse
@@ -738,8 +697,7 @@ FORTHCODE 'z"', zquote
   NIP
   ret
 
-; DLL-LOAD ( zstr -- )
-FORTHCODE 'dll-load', dll_load
+FORTHCODE 'dll-load', dll_load ; ( zstr -- )
   WINENTER $20
   mov rcx, rax
   call [LoadLibraryA]
@@ -747,17 +705,15 @@ FORTHCODE 'dll-load', dll_load
   push rax
   call header
   pop rax
-  call lit
+  call lit_comma
   jmp exit
 
-; DLL-PROC ( mod cnt zstr -- )
 FORTHCODE 'dll-proc', dll_proc
   call header
   mov rdi, [xhere]
   ret
 
-; DLL-CALL ( args.. dll "proc" -- )
-FORTHCODE 'dll-call', dll_call
+FORTHCODE 'dll-call', dll_call ; ( args.. dll zstr -- )
   WINENTER $20
   mov rcx, [rbx]
   mov rdx, rax
@@ -771,14 +727,19 @@ FORTHCODE 'dll-call', dll_call
   DROP 6
   ret
 
-; [ ( switch to interpreter )
-MACROCODE '[', lbrack
+MACROCODE 'xhere', mxhere ; ( -- adr )
+  DUP
+  mov rax, [xhere]
+  ret
+
+; switch to interpreter
+MACROCODE '[', lbrack ; ( -- )
   lea rdx, [interpret]
   mov qword [action], rdx
   ret
 
-; ; ( end current definition )
-MACROCODE ';', semi
+; end current definition
+MACROCODE ';', semi ; ( -- )
   call lbrack
 MACROCODE ';;', exit
   mov rdi, [xhere]
@@ -789,29 +750,9 @@ MACROCODE ';;', exit
 MACROCODE 'then', then
   ret
 
-; ASM ( parse: "n" n*i opcodes and assemble inline -- )
-MACROCODE 'asm', asm
-  call word_
-  call number
-  jne abort.notfnd
-  push r12
-  mov r12, rax
-  DROP
-.loop:
-  call word_
-  call number
-  jne abort.notfnd
-  call bcomma_x
-  dec r12
-  jnz .loop
-  pop r12
-.docopy:
-  ret
-
-; z" ( -- adr )
 ; parse a string delimited by " and compile code to push its address
 ; on the data stack
-MACROCODE 'z"', mzquote
+MACROCODE 'z"', mzquote ; ( -- adr )
   DUP
   mov al, '"'
   call parse
@@ -840,22 +781,22 @@ MACROCODE 'z"', mzquote
   lea rax, [rdi+1]
   ret
 
-MACROCODE 'for', for
-; 0000: 41 54              push        r12
-; 0002: 49 89 C4           mov         r12,rax
-; 0005: 48 8B 03           mov         rax,qword ptr [rbx]
-; 0008: 48 8D 5B 08        lea         rbx,[rbx+8]
-  DUP
-  mov rax, [xhere]
-  mov rdx, $038B48C489495441
-  mov ecx, $085B8D48
-  mov [rax+0], rdx
-  mov [rax+8], ecx
-  add rax, 12
-  mov [xhere], rax
-  ret
+;MACROCODE 'for', for
+;; 0000: 41 54              push        r12
+;; 0002: 49 89 C4           mov         r12,rax
+;; 0005: 48 8B 03           mov         rax,qword ptr [rbx]
+;; 0008: 48 8D 5B 08        lea         rbx,[rbx+8]
+;  DUP
+;  mov rax, [xhere]
+;  mov rdx, $038B48C489495441
+;  mov ecx, $085B8D48
+;  mov [rax+0], rdx
+;  mov [rax+8], ecx
+;  add rax, 12
+;  mov [xhere], rax
+;  ret
 
-MACROCODE 'next', next
+MACROCODE 'next', next ; ( orig -- )
 ; 0000: 49 FF CC           dec         r12
 ; 0003: 75 00              jne         00
 ; 0003: 0F 85 00 00 00 00  jne         00
@@ -883,19 +824,23 @@ MACROCODE 'next', next
   DROP
   ret
 
-MACROCODE 'i', i
+MACROCODE 'i', i ; ( -- x )
   call mdup
   mov dword [rdi], $E0894C
   add rdi, 3
   mov [xhere], rdi
   ret
 
-MACROCODE 'dup', mdup
+MACROCODE 'dup', mdup ; ( x -- x x )
   mov rdi, [xhere]
   mov dword [rdi+$00], $F85B8D48 ; lea rbx, [rbx-8]
   mov dword [rdi+$04], $038948   ; mov [rbx], rax
   add rdi, 7
   mov [xhere], rdi
+  ret
+
+MACROCODE 'int3', _int3
+  int3
   ret
 
 ; [m]find ( adr u -- adr u | -- )
@@ -951,7 +896,7 @@ compile:
   jmp qword [rsi]
 @@:
   call find
-  jne lit0
+  jne lit_comma0
   DUP
   mov rax, [rsi]
 
@@ -973,13 +918,12 @@ FORTHCODE 'rel32,', rel32_comma
   DROP
   ret
 
-lit0:
+lit_comma0:
   call number
   jne abort.notfnd
-; lit ( n -- )
-MACROCODE 'lit', lit
+FORTHCODE 'lit,', lit_comma ; ( n -- )
   call mdup
-  mov word  [rdi+$00], $B848     ; mov rax, 0
+  mov word  [rdi+$00], $B848 ; mov rax, 0
   mov qword [rdi+$02], rax
   add rdi, 10
   mov [xhere], rdi

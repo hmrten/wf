@@ -170,7 +170,7 @@ USERVAR 'md'   , md, macro_space+macro_names.size
 USERVAR 'hd'   , hd, fd
 USERVAR '#tib' , tib_n, 0
 USERVAR '>in'  , tib_i, 0
-USERVAR 'base' , base, 16
+USERVAR 'base' , base, 10
 USERVAR 'xhere', xhere, code_space
 USERVAR 'here' , here, data_space
 
@@ -520,6 +520,17 @@ FORTHCODE 'number', number ; ( adr u -- x )
   sete r9b
   add rsi, r9
   sub rax, r9
+  cmp byte [rsi], '$'
+  jne @f
+  mov edi, 16
+  jmp .prefix
+@@:
+  cmp byte [rsi], '#'
+  jne .loop
+  mov edi, 10
+.prefix:
+  inc rsi
+  dec rax
 .loop:
   movzx ecx, byte [rsi]
   inc rsi

@@ -3,8 +3,8 @@ macro header : ] header ;
 
 : ` '' call, ;
 
-: drop 085B8D48038B48 7 ,, ;
-: for C489495441 5 ,, ` drop ` xhere ;
+: drop $085B8D48038B48 7 ,, ;
+: for $C489495441 5 ,, ` drop ` xhere ;
 
 : asm word number for word number 1 ,, next ;
 
@@ -13,7 +13,7 @@ forth
 
 \ : + asm 7 48 03 03 48 8D 5B 08 ;
 
-: #1+ header C08348 3 ,, 1 ,, ` ;; ;
+: #1+ header $C08348 3 ,, 1 ,, ` ;; ;
 
 1 #1+ 1+
 2 #1+ 2+

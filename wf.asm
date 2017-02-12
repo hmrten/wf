@@ -253,7 +253,7 @@ FORTHCODE 'accept', accept ; ( adr u1 -- u2 )
   sub rax, rsi
 
   cmp qword [conin], 0
-  jne .echo
+  jne .leave
 
   mov esi, eax
   mov rcx, [stdout]
@@ -270,7 +270,6 @@ FORTHCODE 'accept', accept ; ( adr u1 -- u2 )
   WINLEAVE
   NIP
   ret
-
 .empty:
   mov rdi, [conin]
   test rdi, rdi
@@ -279,13 +278,6 @@ FORTHCODE 'accept', accept ; ( adr u1 -- u2 )
   xor eax, eax
   mov [conin], rax
   jmp .leave
-.echo:
-  WINLEAVE
-  push rax
-  call type
-  pop rax
-  DUP
-  ret
 
 FORTHCODE 'refill', refill ; ( -- ZF )
   lea rbx, [rbx-16]
@@ -833,13 +825,6 @@ MACROCODE 'next', next ; ( orig -- )
   add rdi, 2
   mov [xhere], rdi
   DROP
-  ret
-
-MACROCODE 'i', i ; ( -- x )
-  call mdup
-  mov dword [rdi], $E0894C
-  add rdi, 3
-  mov [xhere], rdi
   ret
 
 MACROCODE 'dup', mdup ; ( x -- x x )

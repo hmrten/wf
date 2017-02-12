@@ -5,6 +5,7 @@ macro header : ] header ;
 
 : drop $085B8D48038B48 7 ,, ;
 : for $C489495441 5 ,, ` drop ` xhere ;
+: i ` dup $E0894C 3 ,, ;
 
 : asm word number for word number 1 ,, next ;
 
